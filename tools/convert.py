@@ -2227,6 +2227,18 @@ def build_terrain(src, n, W, H, out_map):
 
 # ---------------------------------------------------------------- main
 
+def find_classic_client(start):
+    """Sobe a partir de start até a pasta do cliente Classic (a que tem artLegacyMUL.uop): serve também em worktrees."""
+    d = os.path.abspath(start)
+    while True:
+        if os.path.exists(os.path.join(d, 'artLegacyMUL.uop')):
+            return d
+        up = os.path.dirname(d)
+        if up == d:
+            sys.exit('pasta do cliente Classic não encontrada: passe --client <pasta com artLegacyMUL.uop>')
+        d = up
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--source', choices=('enhanced', 'classic'), default='classic')
@@ -2242,7 +2254,7 @@ def main():
     if a.source == 'enhanced':
         src = EnhancedSource(a.client or os.path.normpath(os.path.join(HERE, '..', '..', '..', 'Ultima Online Enhanced')))
     else:
-        src = ClassicSource(a.client or os.path.normpath(os.path.join(HERE, '..', '..')))
+        src = ClassicSource(a.client or find_classic_client(HERE))
     print(f'fonte: {src.name} ({src.client})')
 
     mpath = os.path.join(out_map, 'manifest.json')
