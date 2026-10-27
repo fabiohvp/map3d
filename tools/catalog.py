@@ -107,7 +107,7 @@ def main():
     ids, counts = np.unique(sid, return_counts=True)
     use = dict(zip(ids.tolist(), counts.tolist()))
     src = C.ClassicSource(a.client)
-    _, height, _ = src.static_tiledata()
+    _, height, _, _ = src.static_tiledata()
 
     os.makedirs(os.path.join(a.out, 'sprites'), exist_ok=True)
     singles, cand = [], set()
