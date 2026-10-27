@@ -651,13 +651,16 @@ def _smooth_normals(P, tris):
     return acc
 
 
-def hull_mesh(mask, rho, target=HULL_CELLS, lean=1.0):
+def hull_mesh(mask, rho, target=HULL_CELLS):
     """Casco fechado inflado da silhueta. Espessura T(v) = ρ·√(d(2r − d)), d = distância à borda e r = raio
-    inscrito local. Cada vértice da frente fica no raio da câmera do seu pixel; o verso espelha a frente
-    em torno do plano médio (soldado na borda) e desce para projetar dentro da frente. A borda de baixo
-    conta como interior (espelhada para baixo): base chata, apoiada em lz = 0."""
+    inscrito local. O plano médio é o plano vertical pelo centro do tile (lx + ly = 1) voltado para a câmera;
+    frente e verso se afastam ±T dele na horizontal, soldados na borda. A altura de cada vértice sai da
+    linha do pixel (última linha da art ≈ chão). Assim peças do mesmo tile (tronco e copa
+    de uma árvore) ficam centradas no tile e alinhadas entre si; o assets3d aterra cada sprite pelo próprio
+    pixel mais baixo, o que jogava o tronco no canto da frente do tile e a copa para trás.
+    A borda de baixo conta como interior (espelhada para baixo): base com volume."""
     h, w = mask.shape
-    ax, ay = w / 2, h - 44
+    ax = w / 2
     x0, y0, x1, y1 = _bbox(mask)
     m = mask[y0:y1, x0:x1]
     c = max(1, int(math.ceil(math.sqrt(max(int(m.sum()), 1) / target))))
@@ -686,14 +689,14 @@ def hull_mesh(mask, rho, target=HULL_CELLS, lean=1.0):
     Tf = Tv[ii, jj]
     p = (sx - ax) / PXP
 
-    def unproj(q):
-        return (q + p) / SQ2, (q - p) / SQ2, (ay + PXP * q - sy) / PZ
-
-    q_c = -float(unproj(Tf)[2].min()) * PZ / PXP     # aterra: o ponto mais baixo fica em lz = 0
-    fx, fy, fz = unproj(q_c + Tf)
-    front = np.stack([fx, fy, fz], 1)
-    qb = q_c - Tf
-    back = np.stack([(qb + p) / SQ2, (qb - p) / SQ2, np.maximum(fz - lean * 2 * Tf * PXP / PZ, 0.0)], 1)
+    lz = (h - sy) / PZ
+    # o pé do objeto fica um pouco acima da última linha da art: desce até 4 z (copas, que começam bem
+    # mais alto, descem os mesmos 4 z que o tronco e continuam alinhadas com ele)
+    lz -= min(float(lz.min()), 4.0)
+    q_c = 1 / SQ2                                     # centro do tile: lx + ly = 1
+    qf, qb = q_c + Tf, q_c - Tf
+    front = np.stack([(qf + p) / SQ2, (qf - p) / SQ2, lz], 1)
+    back = np.stack([(qb + p) / SQ2, (qb - p) / SQ2, lz], 1)
     interior = Tf > 1e-4
     nF = len(front)
     back_idx = np.where(interior, nF + np.cumsum(interior) - 1, np.arange(nF))

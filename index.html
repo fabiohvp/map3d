@@ -355,14 +355,14 @@ void main() {
     vec2 a = vec2(Q[gl_VertexID % 6]);
     float e = P(t2.z), c = P(t2.w), sx = P(t3.x), sy = P(t3.y);
     vec2 g = mix(vec2(-e), vec2(1.0 + e), a);
-    vPix = proj(vec3(g, c + sx * (1.0 - g.x) + sy * (1.0 - g.y)), w, h);  // a textura vem do plano ajustado à art
+    vec3 T = vec3(g, c + sx * (1.0 - g.x) + sy * (1.0 - g.y));   // plano ajustado à art
+    vPix = proj(T, w, h);      // a textura vem dele
+    L = T;
     if (((aA >> 25) & 1u) != 0u) {
-      // a geometria segue a inclinação do telhado montado (z dos vizinhos), mantendo a altura no
-      // centro do tile: as bordas de fileiras vizinhas se encontram, sem degraus nem buracos
+      // a geometria segue a inclinação do telhado montado (z dos vizinhos), mantendo a altura do plano
+      // da art no centro do tile: fica onde o UO desenha e as bordas de fileiras vizinhas se encontram
       vec2 gs = (vec2(float((aA >> 26) & 7u), float((aA >> 29) & 7u)) - 4.0) * 1.5;
-      L = vec3(g, 0.5 * (abs(gs.x) + abs(gs.y)) + dot(gs, g - 0.5));
-    } else {
-      L = vec3(g, 0.5 * (abs(sx) + abs(sy)) - sx * (g.x - 0.5) - sy * (g.y - 0.5));
+      L.z = c + 0.5 * (sx + sy) + dot(gs, g - 0.5);
     }
     L.z += tie * 0.08;
     vN = vec3(0.0);
