@@ -912,6 +912,56 @@ def bed_mesh(img, H):
     return tuple(np.concatenate([p[k] for p in parts]) for k in range(3))
 
 
+def pew_mesh(mask, Hs=5.0, depth=0.55):
+    """Banco de encosto: o encosto é um plano vertical na borda do tile (eixo e borda pelo contorno de cima,
+    como os trilhos); o assento, um plano horizontal na altura Hs com depth de fundo na frente dele; o que
+    fica abaixo do assento na frente (avental, pés), um plano vertical na borda da frente do assento. Cada
+    pixel vai para a primeira peça que o cobre: assento, encosto, avental. -> None se não achar o eixo."""
+    fit = rail_mesh(mask, snap=True, plane=True)
+    if fit is None or fit[0] not in ('\\', '/'):
+        # peça da ponta: o braço do banco quebra o contorno; o eixo sai das colunas do encosto (as mais altas)
+        top = np.array([np.argmax(c) if c.any() else mask.shape[0] for c in mask.T])
+        keep = top <= np.median(top[top < mask.shape[0]])
+        fit = rail_mesh(mask & keep[None, :], snap=True, plane=True)
+        if fit is not None and fit[0] in 'AV':
+            # encosto + lateral da ponta (Λ): o encosto é o trecho mais comprido
+            cols = np.nonzero((mask & keep[None, :]).any(0))[0]
+            j = np.arange(mask.shape[1])
+            side = j < fit[2] if fit[2] - cols[0] > cols[-1] - fit[2] else j > fit[2]
+            fit = rail_mesh(mask & (keep & side)[None, :], snap=True, plane=True)
+    if fit is None or fit[0] not in ('\\', '/'):
+        return None
+    kind, E, _ = fit
+    h, w = mask.shape
+    F = E + depth if E < 0.5 else E - depth      # borda da frente do assento
+    lo, hi = min(E, F), max(E, F)
+    ai = 0 if kind == '/' else 1                 # coordenada fixa do encosto: lx (/) ou ly (\)
+
+    def at_z(sx, sy, z):                         # raio do pixel até a altura z
+        d, s = (sx - w / 2) / HT, (sy - (h - 44) + PZ * z) / HT
+        return np.stack([(s + d) / 2, (s - d) / 2, np.full(len(sx), float(z))], 1)
+
+    def at_plane(a):                             # raio do pixel até o plano vertical (lx ou ly) = a
+        def place(sx, sy):
+            d = (sx - w / 2) / HT
+            lx, ly = (np.full(len(sx), a), a - d) if ai == 0 else (a + d, np.full(len(sx), a))
+            return np.stack([lx, ly, (HT * (lx + ly) + h - 44 - sy) / PZ], 1)
+        return place
+
+    vs, us = np.nonzero(mask)
+    sx, sy = us + 0.5, vs + 0.5
+    S = at_z(sx, sy, Hs)
+    seat = (S[:, ai] >= lo - 0.02) & (S[:, ai] <= hi + 0.02) & (S[:, 1 - ai] >= -0.05) & (S[:, 1 - ai] <= 1.05)
+    back = ~seat & (at_plane(E)(sx, sy)[:, 2] >= -0.5)
+    parts = []
+    for sel, place in ((seat, lambda x, y: at_z(x, y, Hs)), (back, at_plane(E)), (~seat & ~back, at_plane(F))):
+        if sel.sum() >= 4:
+            m = np.zeros_like(mask)
+            m[vs[sel], us[sel]] = True
+            parts.append(_plane_mesh(m, place))
+    return tuple(np.concatenate([p[k] for p in parts]) for k in range(3)) if parts else None
+
+
 def slab_mesh(mask, H, rest_plane=None):
     """Caixa do tile na altura H com o resto da silhueta num plano (rest_plane, ou um cartão no centro do
     tile): banco de encosto = assento em caixa e o encosto num plano na borda do tile."""
@@ -922,6 +972,160 @@ def slab_mesh(mask, H, rest_plane=None):
         mesh = rest_plane(rest) if rest_plane else None
         parts.append(mesh if mesh is not None else _plane_mesh(rest, _facing_plane(rest, 1.0)))
     return tuple(np.concatenate([p[k] for p in parts]) for k in range(3))
+
+
+def _blobs(m):
+    """Componentes 4-conexas de uma máscara -> lista de (ys, xs)."""
+    seen = np.zeros_like(m, bool)
+    out = []
+    for y, x in zip(*np.nonzero(m)):
+        if seen[y, x]:
+            continue
+        seen[y, x] = True
+        stack, ys, xs = [(y, x)], [], []
+        while stack:
+            cy, cx = stack.pop()
+            ys.append(cy); xs.append(cx)
+            for ny, nx in ((cy - 1, cx), (cy + 1, cx), (cy, cx - 1), (cy, cx + 1)):
+                if 0 <= ny < m.shape[0] and 0 <= nx < m.shape[1] and m[ny, nx] and not seen[ny, nx]:
+                    seen[ny, nx] = True
+                    stack.append((ny, nx))
+        out.append((np.array(ys), np.array(xs)))
+    return out
+
+
+def fountain_meshes(pieces, segs=48):
+    """Chafariz de vários tiles: cada peça é a fatia da imagem do chafariz que cai no losango do seu tile.
+    Monta a imagem inteira, tira dela um sólido de revolução e reparte as faces entre as peças pelo pixel.
+    Perfil (desenho 2:1 dos objetos redondos, eixo = meio da largura, centro no chão Yc = base − W/4):
+    - cada mancha de água (azul) é uma bacia: a linha mais larga é o centro da elipse -> altura da água,
+      a meia largura -> raio; a borda fica um pouco acima e por fora;
+    - paredes de baixo até a borda da bacia de baixo: raio pelo contorno lateral da silhueta (degraus);
+    - coluna entre as bacias: a falha sem água no meio da mancha de baixo;
+    - bacia de cima: borda, parede curta e fundo até a coluna.
+    pieces: [(dx, dy, img)] na mesma altura. -> {índice da peça: malha} ou None sem água."""
+    pad = 40
+    lo_u = min(HT * (dx - dy) - img.shape[1] // 2 for dx, dy, img in pieces)
+    lo_v = min(HT * (dx + dy) - (img.shape[0] - 44) for dx, dy, img in pieces)
+    OX, OY = pad - lo_u, pad - lo_v
+    Wc = int(max(OX + HT * (dx - dy) - img.shape[1] // 2 + img.shape[1] for dx, dy, img in pieces)) + pad
+    Hc = int(max(OY + HT * (dx + dy) - (img.shape[0] - 44) + img.shape[0] for dx, dy, img in pieces)) + pad
+    canvas = np.zeros((Hc, Wc), np.uint16)
+    own = np.full((len(pieces), Hc, Wc), False)
+    origin = [None] * len(pieces)
+    for k, (dx, dy, img) in sorted(enumerate(pieces), key=lambda t: t[1][0] + t[1][1]):   # ordem do cliente
+        h, w = img.shape
+        u0, v0 = int(OX + HT * (dx - dy) - w // 2), int(OY + HT * (dx + dy) - (h - 44))
+        m = img != 0
+        canvas[v0:v0 + h, u0:u0 + w][m] = img[m]
+        own[k, v0:v0 + h, u0:u0 + w] = m
+        origin[k] = (u0, v0)
+    mask = canvas != 0
+    x0, y0, x1, y1 = _bbox(mask)
+    axis, W = (x0 + x1) / 2, x1 - x0
+    Yc = y1 - W / 4
+    r5, g5, b5 = (canvas >> 10) & 31, (canvas >> 5) & 31, canvas & 31
+    water = mask & (b5.astype(int) > r5 + 3) & (b5 >= g5)
+    basins = []
+    for ys, xs in _blobs(water):
+        if len(ys) < 20:
+            continue
+        rows = np.unique(ys)
+        width = np.array([np.ptp(xs[ys == r]) for r in rows])
+        cy = float(rows[np.argmax(width)])
+        a = (xs.max() - xs.min() + 1) / 2
+        # coluna: a falha sem água em volta do eixo, nas linhas da mancha acima do centro
+        gaps = []
+        for r in rows[rows <= cy]:
+            row = water[r, int(xs.min()):int(xs.max()) + 1]
+            c = int(round(axis)) - int(xs.min())
+            if 0 <= c < len(row) and not row[c]:
+                l, rr = c, c
+                while l > 0 and not row[l - 1]:
+                    l -= 1
+                while rr < len(row) - 1 and not row[rr + 1]:
+                    rr += 1
+                if l > 0 and rr < len(row) - 1:
+                    gaps.append(rr - l + 1)
+        basins.append(((Yc - cy) / PZ, a / PXP, (np.median(gaps) / 2 / PXP) if gaps else None))
+    if not basins:
+        return None
+    basins.sort()
+
+    def contour(z):   # raio da silhueta na linha da altura z (meia largura em volta do eixo)
+        v = int(round(Yc - PZ * z))
+        cols = np.nonzero(mask[min(max(v, y0), y1 - 1)])[0]
+        return max(axis - cols[0], cols[-1] + 1 - axis) / PXP
+
+    RIM, LIP = 1.0, 0.06                         # borda: 1 z acima da água e 0,06 tile por fora
+    prof = []                                    # perfil (r, z) de fora/baixo para dentro/cima
+    zw, rw, gap = basins[0]
+    R = max(float(np.median([contour(z) for z in np.arange(0.0, zw + RIM, 0.5)])), rw + LIP)
+    prof += [(R, 0.0), (R, zw + RIM), (rw, zw + RIM), (rw, zw)]
+    for zw, rw, nxt in basins[1:]:
+        col = min(gap or rw * 0.4, rw * 0.6)     # coluna que sai da bacia de baixo
+        R = rw + LIP
+        bottom = max(prof[-1][1] + 0.5, zw - 0.5 * (zw - prof[-1][1]))
+        prof += [(col, prof[-1][1]), (col, bottom), (R, bottom + 0.3), (R, zw + RIM), (rw, zw + RIM), (rw, zw)]
+        gap = nxt
+    if gap and gap < rw * 0.5:                   # bico no meio da bacia de cima
+        prof += [(gap, prof[-1][1]), (gap, prof[-1][1] + 1.5)]
+    prof.append((0.0, prof[-1][1]))
+
+    # malha: cada trecho do perfil vira um anel de quads com vértices próprios (normais do trecho)
+    ox = (axis - OX) / HT                        # lx − ly do eixo (relativo à peça de referência)
+    dxs = np.array([dx for dx, _, _ in pieces], float); dys = np.array([dy for _, dy, _ in pieces], float)
+    oxy = (dxs + dys).mean() + 1.0               # lx + ly: centro da pegada das peças
+    cx, cy = (oxy + ox) / 2, (oxy - ox) / 2
+    th = np.linspace(0, 2 * math.pi, segs + 1)
+    P, N, PX = [], [], []
+    tris = []
+    for (ra, za), (rb, zb) in zip(prof, prof[1:]):
+        if abs(ra - rb) + abs(za - zb) < 1e-6:
+            continue
+        nr, nz = (zb - za) * METRIC_Z, -(rb - ra)
+        nl = math.hypot(nr, nz)
+        nr, nz = nr / nl, nz / nl
+        steps = max(1, int(math.ceil(max(abs(rb - ra) * PXP, abs(zb - za) * PZ) / 6)))
+        base = len(P)
+        for t in np.linspace(0, 1, steps + 1):
+            r, z = ra + (rb - ra) * t, za + (zb - za) * t
+            for a in th:
+                ex, ey = math.cos(a), math.sin(a)
+                P.append((cx + r * ex, cy + r * ey, z))
+                N.append((nr * ex, nr * ey, nz))
+                s = r * (ex + ey)
+                if s < 0 and nz < 0.5:           # lado de trás de parede: pixel da frente (espelho)
+                    s = -s
+                PX.append((axis + HT * r * (ex - ey), Yc + ART_DEPTH * s - PZ * z))
+        n = segs + 1
+        for i in range(steps):
+            for j in range(segs):
+                a, b = base + i * n + j, base + i * n + j + 1
+                tris += [(a, b, b + n), (a, b + n, a + n)]
+    P, N, PX = np.array(P), np.array(N), np.array(PX)
+    tris = np.array(tris, np.int64)
+    # reparte: a face vai para toda peça com pixel opaco em algum vértice ou no centro (a costura fecha)
+    pts = np.concatenate([PX[tris], PX[tris].mean(1, keepdims=True)], 1)
+    ui = np.clip(np.round(pts[..., 0]).astype(int), 0, Wc - 1)
+    vi = np.clip(np.round(pts[..., 1]).astype(int), 0, Hc - 1)
+    hit = own[:, vi, ui].any(2)                  # (peça, face)
+    centers = np.array([(u0 + pieces[k][2].shape[1] / 2, v0 + pieces[k][2].shape[0] - 22)
+                        for k, (u0, v0) in enumerate(origin)])
+    near = np.argmin(((pts[:, 3, None, :] - centers[None]) ** 2).sum(2), 1)
+    none = ~hit.any(0)
+    hit[near[none], np.nonzero(none)[0]] = True
+    out = {}
+    for k, (dx, dy, img) in enumerate(pieces):
+        sel = tris[hit[k]]
+        if not len(sel):
+            continue
+        u0, v0 = origin[k]
+        Pk = P - np.array([dx, dy, 0.0])
+        out[k] = _expand(Pk, PX - np.array([u0, v0]), sel, N)
+    if max(len(m[0]) for m in out.values()) > MESH_CLASSES[-1]:
+        return None                              # não cabe no maior lote: fica a laje
+    return out
 
 
 PLANT_NAMES = (r'bramble|sapling|rushes|\bweeds?\b|cattail|fan plant|elephant ear|snake plant|poppies|'
@@ -1035,7 +1239,7 @@ def plant_mesh(mask, height=0, tree=False):
     return tuple(np.concatenate([a[k], b[k]]) for k in range(3))
 
 
-def rail_mesh(mask, snap=None):
+def rail_mesh(mask, snap=None, plane=False):
     """Corrimão / grade fina: na art, retas de inclinação ±1 são trilhos nos eixos do mapa, então cada
     trecho fica num plano vertical: descendo para a direita (\\) é o eixo x (ly = c), subindo (/) é o y
     (lx = c'). Formas: \\, /, Λ (ápice em cima) e V (ápice embaixo), escolhidas pelo contorno de cima de cada
@@ -1091,6 +1295,8 @@ def rail_mesh(mask, snap=None):
         edges += [0.0 - k, 1.0 - k]          # plano y: lx = c + k
     ok = [e for e in edges if e >= cg - 0.05]
     c = min(ok) if ok and snap else cg
+    if plane:                                # só o plano: (forma, coordenada fixa lx (/) ou ly (\))
+        return kind, (c + k if kind == '/' else c), ua
     return _plane_mesh(mask, lambda sx, sy: place(sx, sy, c))
 
 
@@ -1128,7 +1334,9 @@ def sprite_mesh(img, tx, cat, sub, name='', height=0, surface=False):
         # fatia de chafariz de vários tiles: a bacia é pintada no losango do chão; vira laje erguida
         return 'laje', flat_mesh(mask, max(height, 1), plinth=True)
     if re.search(r'\bbench\b', name, re.I) and mask.shape[0] >= 70:
-        return 'laje', slab_mesh(mask, 4, lambda r: rail_mesh(r, snap=True))   # banco de encosto
+        mesh = pew_mesh(mask)                    # banco de encosto
+        if mesh is not None:
+            return 'banco', mesh
     if re.search(r'display case|\brail|railing|\bfence', name, re.I) and height <= 3 and not surface:
         mesh = rail_mesh(mask)
         if mesh is not None:
@@ -1291,6 +1499,42 @@ def write_meshes(path, meshes):
     return first, total
 
 
+def fountain_groups(src, gx, gy, z, sid, snames):
+    """Peças de chafariz vizinhas (mesmo z) formam um chafariz; cada sprite usa a malha do primeiro
+    chafariz em que aparece. -> {sprite: malha}"""
+    named = {s for s in np.unique(sid).tolist() if s < len(snames) and re.search(r'\bfountain\b', snames[s], re.I)}
+    idx = np.nonzero(np.isin(sid, list(named)))[0]
+    at = {(int(gx[i]), int(gy[i]), int(z[i])): int(sid[i]) for i in idx}
+    out, seen = {}, set()
+    for p0 in at:
+        if p0 in seen:
+            continue
+        comp, stack = [], [p0]
+        seen.add(p0)
+        while stack:
+            p = stack.pop()
+            comp.append(p)
+            for ddx in (-1, 0, 1):
+                for ddy in (-1, 0, 1):
+                    q = (p[0] + ddx, p[1] + ddy, p[2])
+                    if q in at and q not in seen:
+                        seen.add(q)
+                        stack.append(q)
+        if len(comp) < 4 or all(at[p] in out for p in comp):
+            continue
+        bx, by = min(p[0] for p in comp), min(p[1] for p in comp)
+        pieces, sids = [], []
+        for p in sorted(comp):
+            img = src.static_art(at[p])
+            if img is not None and img.any():
+                pieces.append((p[0] - bx, p[1] - by, img))
+                sids.append(at[p])
+        res = fountain_meshes(pieces) if len(pieces) >= 4 else None
+        for k, mesh in (res or {}).items():
+            out.setdefault(sids[k], mesh)
+    return out
+
+
 def build_statics(src, n, W, H, out_map):
     print('lendo statics...')
     sflags, sheight, snodraw, snames = src.static_tiledata()
@@ -1318,11 +1562,17 @@ def build_statics(src, n, W, H, out_map):
     tx = _load_taxonomy()
     sprites, imgs, meshes = {}, {}, {}
     engines = {}
+    fountain = fountain_groups(src, gx, gy, z, sid, snames)
     for s in np.unique(sid).tolist():
         img = src.static_art(s)
         if img is None or not img.any():
             continue
         imgs[s] = img
+        if s in fountain:
+            meshes[s] = fountain[s]
+            sprites[s] = (SK_MESH, None)
+            engines['chafariz'] = engines.get('chafariz', 0) + 1
+            continue
         name = snames[s] if s < len(snames) else ''
         roof = int(sflags[s]) & SF_ROOF
         if roof or re.search(r'\broof', name, re.I):
