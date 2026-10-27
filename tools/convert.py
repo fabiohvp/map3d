@@ -515,7 +515,7 @@ def hexagon_iou(mask, boxes, of_mask=False):
     return float(inter) / float(union) if union else 0.0
 
 
-WALL_LIKE = {'architecture/wall', 'architecture/window', 'architecture/door', 'architecture/fence',
+WALL_LIKE = {'architecture/wall', 'architecture/window', 'architecture/door', 'architecture/fence', 'architecture/arch',
              'architecture/column', 'architecture/bridge'}
 WALL_T = 0.16            # espessura das paredes do UO (as retas medem 0,14–0,16 tile)
 
@@ -911,7 +911,118 @@ def bed_mesh(img, H):
     return tuple(np.concatenate([p[k] for p in parts]) for k in range(3))
 
 
-def rail_mesh(mask):
+PLANT_NAMES = (r'bramble|sapling|rushes|\bweeds?\b|cattail|fan plant|elephant ear|snake plant|poppies|'
+               r'century plant|yucca|grapevine|blade plant|water plants|\bfern|\breeds?\b|\bgrass|'
+               r'\bflowers?\b|mushroom|\bcrops?\b|wheat|\bcorn\b|cotton|\bflax|hay sheave|lettuce|cabbage|'
+               r'turnip|onion|carrot|pumpkin plant|\bvines?\b|\bivy\b|orfluer|cactus|\bhedge')
+FLAT_NAMES = (r'lill?y pads?|water lill?y|\bacid\b|garbage|refuse|debris|spilled|wood curls|\bpuddle|'
+              r'^\s*blood\s*$|blood smear|blood pool')
+LOG_NAMES = r'fallen log|sunken log|\btree trunk|\blog\b'
+
+
+def log_mesh(mask):
+    """Tora deitada (tronco caído): cilindro horizontal no eixo x (silhueta descendo para a direita) ou y
+    (subindo), apoiado no chão. Na projeção do UO o corte de raio r tem 2·√(22² + (4/zs)²)·r px de altura
+    na vertical; o eixo e o comprimento saem da linha central da silhueta. Textura = projeção do UO
+    (exata, a casca toda cai dentro da faixa). Galhos e o que sobra fora da faixa: cartão no eixo.
+    -> None se a silhueta não for alongada na diagonal."""
+    h, w = mask.shape
+    vs, us = np.nonzero(mask)
+    if len(us) < 30:
+        return None
+    u, v = us + 0.5, vs + 0.5
+    cu, cv = u.mean(), v.mean()
+    cov = np.cov(np.stack([u - cu, v - cv]))
+    ev, evec = np.linalg.eigh(cov)
+    du, dv = evec[:, 1]
+    if ev[1] < 1.6 * ev[0] or min(abs(du), abs(dv)) < 0.2:
+        return None                                   # não é uma faixa diagonal (ponta, toco)
+    along_x = du * dv > 0
+    # espessura vertical da faixa: mediana, por coluna, da altura ocupada
+    cols = np.unique(us)
+    thick = np.median([np.ptp(vs[us == c]) + 1 for c in cols])
+    zs = 0.1286
+    r = float(thick / (2 * math.hypot(HT, PZ / zs)))
+    if r < 0.05:
+        return None
+    lzc = r / zs                                      # eixo a r do chão, em z
+    # linha central: v − u (eixo x) ou v + u (eixo y) constante = mediana; extremos pelo alcance em u
+    k = np.median(v - u) if along_x else np.median(v + u)
+    ua, ub = float(u.min()), float(u.max())
+    segs = 10
+    th = np.linspace(0, 2 * math.pi, segs, endpoint=False)
+    rings = []
+    for ue in (ua, ub):
+        ve = ue + k if along_x else k - ue
+        # ponto do eixo que cai em (ue, ve) na altura lzc: d = lx − ly, s = lx + ly
+        d = (ue - w / 2) / HT
+        s = (ve - (h - 44) + PZ * lzc) / HT
+        lx, ly = (s + d) / 2, (s - d) / 2
+        a, b = r * np.cos(th), r * np.sin(th) / zs     # (horizontal perpendicular, vertical em z)
+        if along_x:
+            rings.append(np.column_stack([np.full(segs, lx), ly + a, lzc + b]))
+        else:
+            rings.append(np.column_stack([lx + a, np.full(segs, ly), lzc + b]))
+    P = np.concatenate(rings)
+    tris = []
+    for i in range(segs):
+        j = (i + 1) % segs
+        tris += [(i, j, segs + j), (i, segs + j, segs + i)]
+    c0, c1 = len(P), len(P) + 1                       # tampas nas pontas
+    P = np.concatenate([P, [P[:segs].mean(0), P[segs:].mean(0)]])
+    tris += [(c0, (i + 1) % segs, i) for i in range(segs)] + [(c1, segs + i, segs + (i + 1) % segs) for i in range(segs)]
+    tris = np.array(tris, np.int64)
+    tris = np.concatenate([tris, tris[:, ::-1]])     # dupla face: não depende da orientação
+    P, px, tris = _compact(P, _proj(P, w, h), tris)
+    parts = [_expand(P, px, tris)]
+    cover = np.zeros_like(mask)
+    vv, uu = np.mgrid[0:h, 0:w] + 0.5
+    for t in tris[: len(tris) // 2]:
+        (ax, ay), (bx, by), (cx2, cy2) = px[t]
+        dd = (bx - ax) * (cy2 - ay) - (by - ay) * (cx2 - ax)
+        if abs(dd) < 1e-9:
+            continue
+        l1 = ((bx - uu) * (cy2 - vv) - (by - vv) * (cx2 - uu)) / dd
+        l2 = ((cx2 - uu) * (ay - vv) - (cy2 - vv) * (ax - uu)) / dd
+        cover |= (l1 >= -1e-6) & (l2 >= -1e-6) & (1 - l1 - l2 >= -1e-6)
+    rest = mask & ~cover
+    if rest.sum() >= 8:
+        smid = ((cv - (h - 44) + PZ * lzc) / HT)       # plano pelo centro da tora
+        parts.append(_plane_mesh(rest, _facing_plane(rest, smid)))
+    return tuple(np.concatenate([p[k2] for p in parts]) for k2 in range(3))
+PANEL_NAMES = r'banner|tapestry|curtain|painting|portrait|standard|\bmap\b|\bsign\b(?!post)|\bmirror|trophy'
+
+
+def plant_mesh(mask, height=0, tree=False):
+    """Planta (grama, flor, broto, junco, árvore): dois cartões em X nos eixos x e y, cruzando no eixo
+    vertical da silhueta no centro do tile, com o pé (última linha) no chão. Os dois carregam o pixel da
+    art: na vista 2D caem um sobre o outro; em 3D a planta tem volume de qualquer lado. A art espalha a
+    planta pela profundidade do tile (tufos de grama de 45 px), então a altura, de 4 px por z, fica
+    limitada a 2 × max(altura do tiledata, 2) z. Árvores: eixo no centro do tile (w/2) e pé na linha do
+    centro do tile (h − 22), para tronco e copa (sprites separados no mesmo tile) ficarem alinhados."""
+    h, w = mask.shape
+    x0, y0, x1, y1 = _bbox(mask)
+    if tree:
+        axis, y1 = w / 2, h - 22                     # raízes desenhadas à frente afundam no chão
+    else:
+        axis = (x0 + x1) / 2
+    k = min(1.0, 2 * max(height, 2) / max((y1 - y0) / PZ, 1e-6)) if not tree else 1.0
+    d = (axis - w / 2) / HT
+    cx, cy = (1 + d) / 2, (1 - d) / 2
+
+    def plane(along_x):
+        def place(sx, sy):
+            t = (sx - axis) / HT                     # deslocamento horizontal na tela, em tiles de eixo
+            lz = (y1 - sy) / PZ * k
+            if along_x:
+                return np.stack([cx + t, np.full(len(sx), cy), lz], 1)
+            return np.stack([np.full(len(sx), cx), cy - t, lz], 1)
+        return place
+    a, b = _plane_mesh(mask, plane(True)), _plane_mesh(mask, plane(False))
+    return tuple(np.concatenate([a[k], b[k]]) for k in range(3))
+
+
+def rail_mesh(mask, snap=None):
     """Corrimão / grade fina: na art, retas de inclinação ±1 são trilhos nos eixos do mapa, então cada
     trecho fica num plano vertical: descendo para a direita (\\) é o eixo x (ly = c), subindo (/) é o y
     (lx = c'). Formas: \\, /, Λ (ápice em cima) e V (ápice embaixo), escolhidas pelo contorno de cima de cada
@@ -954,7 +1065,19 @@ def rail_mesh(mask):
         return np.stack([lx, ly, (HT * (lx + ly) + h - 44 - sy) / PZ], 1)
 
     vs, us = np.nonzero(mask)
-    c = -float(place(us + 0.5, vs + 1.0, 0.0)[:, 2].min()) * PZ / (2 * HT)
+    cg = -float(place(us + 0.5, vs + 1.0, 0.0)[:, 2].min()) * PZ / (2 * HT)
+    # Na art, peça no meio do tile e baixa ou na borda e 11 z mais alta por tile dão o mesmo pixel.
+    # Trilhos de vitrine e cercas ficam apoiados pelo pé do pino (cg: coincide com a borda das peças
+    # vizinhas). snap (quadros, estandartes): o plano encaixa na borda do tile (a parede) mais próxima
+    # que não deixa a peça abaixo do próprio z (c ≥ cg); sem borda assim, fica apoiado
+    k = (ua - w / 2) / HT
+    edges = []
+    if kind in 'AV' or sg[0] > 0:
+        edges += [0.0, 1.0]                  # plano x: ly = c
+    if kind in 'AV' or sg[0] < 0:
+        edges += [0.0 - k, 1.0 - k]          # plano y: lx = c + k
+    ok = [e for e in edges if e >= cg - 0.05]
+    c = min(ok) if ok and snap else cg
     return _plane_mesh(mask, lambda sx, sy: place(sx, sy, c))
 
 
@@ -963,8 +1086,25 @@ def sprite_mesh(img, tx, cat, sub, name='', height=0, surface=False):
     mask = img != 0
     arch = archetype(tx, cat, sub)
     rho = tx['default_depth_ratio'].get(f'{cat}/{sub}', tx['category_default_depth_ratio'].get(cat, 0.5))
-    if arch == 'flat' or (surface and height == 0 and (cat != 'architecture' or sub == 'floor')):
-        return 'flat', flat_mesh(mask)   # tapetes, pentagramas, pisos: superfície sem altura deita no chão
+    if (arch == 'flat' or (surface and height == 0 and (cat != 'architecture' or sub == 'floor'))
+            or (sub == 'water' and re.fullmatch(r'\s*water\s*', name, re.I)) or re.search(FLAT_NAMES, name, re.I)):
+        # tapetes, pentagramas, pisos, água, vitórias-régias, entulho: deitam no chão (ou na água)
+        return 'flat', flat_mesh(mask)
+    if (re.search(PLANT_NAMES, name, re.I) or cat == 'vegetation' and sub in ('flower', 'mushroom', 'crop')
+            or cat == 'terrain' and sub == 'ground' and height <= 2):
+        return 'planta', plant_mesh(mask, height)
+    if cat == 'vegetation' and sub == 'tree':
+        return 'arvore', plant_mesh(mask, height, tree=True)
+    if re.search(LOG_NAMES, name, re.I):
+        mesh = log_mesh(mask)
+        if mesh is not None:
+            return 'tora', mesh
+    if f'{cat}/{sub}' == 'architecture/arch':
+        arch = 'box'                         # arco = parede com vão: caixa fina e o alpha recorta o vão
+    if re.search(PANEL_NAMES, name, re.I) or sub == 'painting':
+        mesh = rail_mesh(mask, snap=True)   # quadro/estandarte: plano na parede (borda do tile)
+        if mesh is not None:
+            return 'painel', mesh
     if cat == 'container' and sub == 'barrel':
         mesh = cylinder_mesh(mask)
         if mesh is not None:
@@ -1081,11 +1221,13 @@ def roof_slopes(gx, gy, z, roof):
     return has, qx, qy
 
 
-def ceilings(gx, gy, z, sid, sflags):
+def ceilings(gx, gy, z, sid, sflags, sheight):
     """Distância em z até o piso/telhado mais próximo acima de cada item no mesmo tile (0 = nada
-    acima, máx. 63): a malha é cortada ali para itens não atravessarem o andar de cima."""
+    acima, máx. 63): a malha é cortada ali para itens não atravessarem o andar de cima.
+    Andar de cima = telhado ou piso (superfície sem altura); objetos pequenos apoiados em cima
+    (reagentes numa vitrine, louça na mesa) não contam."""
     f = sflags[sid]
-    st = (f & np.uint64(SF_SURFACE | SF_ROOF | SF_BACKGROUND)) != 0
+    st = ((f & np.uint64(SF_ROOF)) != 0) | (((f & np.uint64(SF_SURFACE)) != 0) & (sheight[sid] == 0))
     cell = gx.astype(np.int64) * 8192 + gy
     k = np.sort(cell[st] * 1024 + z[st] + 512)
     q = cell * 1024 + z + 512 + 3
@@ -1163,11 +1305,16 @@ def build_statics(src, n, W, H, out_map):
         if img is None or not img.any():
             continue
         imgs[s] = img
-        if int(sflags[s]) & SF_ROOF:
+        name = snames[s] if s < len(snames) else ''
+        roof = int(sflags[s]) & SF_ROOF
+        if roof or re.search(r'\broof', name, re.I):
+            # telhas sem a flag de telhado (stone/marble/slate roof) também viram plano inclinado, se
+            # a silhueta for de telha; oitões e empenas com esse nome seguem como peça comum
             iou, e, c, sx, sy = fit_slope(img != 0)
-            sprites[s] = (SK_SLOPE, (e, c, sx, sy, 0, 0))
-            engines['telhado'] = engines.get('telhado', 0) + 1
-            continue
+            if roof or iou >= 0.85:
+                sprites[s] = (SK_SLOPE, (e, c, sx, sy, 0, 0))
+                engines['telhado'] = engines.get('telhado', 0) + 1
+                continue
         mask = img != 0
         x0, y0, x1, y1 = _bbox(mask)
         area = int(mask.sum())
@@ -1184,7 +1331,7 @@ def build_statics(src, n, W, H, out_map):
     mfirst, mtotal = write_meshes(os.path.join(out_map, 'meshes.bin'), meshes)
     print(f'  malhas: {mtotal} vértices ({mtotal * 16 / 1e6:.1f} MB)')
     partial = ((sflags[sid] & np.uint64(SF_PARTIAL_HUE)) != 0).astype(np.int64)
-    ceil = ceilings(gx, gy, z, sid, sflags)
+    ceil = ceilings(gx, gy, z, sid, sflags, sheight)
     hide = (((ceil > 0) & (ceil <= 12)) | under_roof(gx, gy, z, sid, sflags)).astype(np.int64)
 
     # atlas: recorta a bbox opaca e empacota em prateleiras
