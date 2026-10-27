@@ -1563,6 +1563,38 @@ def load_item_meshes(path=ITEMS_DATA):
     return out
 
 
+CELL = 8   # lado (px) da célula de cor de cada material na textura de um modelo procedural
+
+
+def load_proc_meshes(path=ITEMS_DATA):
+    """Modelos procedurais de items/bake.html (items/data/proc_meshes.bin + .json) -> {id: (P, px, n, textura)}.
+    Cada material vira uma célula CELL×CELL de cor lisa numa textura de 1 linha; o pixel de cada vértice é o
+    centro da célula do seu material, então o shader do mapa lê a cor sem precisar de sprite."""
+    jp, bp = os.path.join(path, 'proc_meshes.json'), os.path.join(path, 'proc_meshes.bin')
+    if not (os.path.exists(jp) and os.path.exists(bp)):
+        return {}
+    index = json.load(open(jp))
+    blob = open(bp, 'rb').read()
+    zs = 0.144
+    out = {}
+    for hx, e in index.items():
+        o, nv, nc = e['o'], e['nv'], e['nc']
+        pos = np.frombuffer(blob, '<f4', nv * 3, o).reshape(nv, 3).astype(np.float64)
+        o += nv * 12
+        nrm = np.frombuffer(blob, 'i1', nv * 4, o).reshape(nv, 4).astype(np.float64) / 127.0
+        o += nv * 4
+        mat = np.frombuffer(blob, 'u1', nv, o).astype(np.int64)
+        o += -(-nv // 4) * 4
+        col = np.frombuffer(blob, 'u1', nc * 4, o).reshape(nc, 4)
+        P = np.stack([pos[:, 0] + 0.5, pos[:, 2] + 0.5, pos[:, 1] / zs], 1)
+        N = np.stack([nrm[:, 0], nrm[:, 2], nrm[:, 1]], 1)
+        px = np.stack([mat * CELL + CELL / 2, np.full(nv, CELL / 2)], 1)
+        c5 = ((col[:, 0].astype(np.uint16) >> 3) << 10) | ((col[:, 1].astype(np.uint16) >> 3) << 5) | (col[:, 2].astype(np.uint16) >> 3) | 0x8000   # bit 15 livre: preto não vira transparente
+        tex = np.repeat(np.repeat(c5[None, :], CELL, 0), CELL, 1).astype(np.uint16)   # 555 UO; o atlas converte
+        out[int(hx, 16)] = (P, px, N, tex)
+    return out
+
+
 def build_statics(src, n, W, H, out_map):
     print('lendo statics...')
     sflags, sheight, snodraw, snames = src.static_tiledata()
@@ -1592,6 +1624,8 @@ def build_statics(src, n, W, H, out_map):
     engines = {}
     fountain = fountain_groups(src, gx, gy, z, sid, snames)
     item_meshes = load_item_meshes()
+    proc = load_proc_meshes()
+    print(f'  {len(proc)} modelos procedurais (items/bake.html)')
     for s in np.unique(sid).tolist():
         img = src.static_art(s)
         if img is None or not img.any():
@@ -1612,6 +1646,13 @@ def build_statics(src, n, W, H, out_map):
                 sprites[s] = (SK_SLOPE, (e, c, sx, sy, 0, 0))
                 engines['telhado'] = engines.get('telhado', 0) + 1
                 continue
+        if s in proc:
+            P, px, nn, tex_ = proc[s]
+            meshes[s] = (P, px, nn)
+            imgs[s] = tex_
+            sprites[s] = (SK_MESH, None)
+            engines['procedural'] = engines.get('procedural', 0) + 1
+            continue
         if s not in item_meshes:   # sem malha em items/data (rode npm run generate:items): fica sem desenhar
             del imgs[s]
             engines['sem malha'] = engines.get('sem malha', 0) + 1
