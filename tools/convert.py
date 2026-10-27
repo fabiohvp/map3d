@@ -491,10 +491,9 @@ def _convex(pts):
     return lo[:-1] + hi[:-1]
 
 
-def hexagon_iou(mask, boxes, of_mask=False):
-    """IoU entre a silhueta e a projeção das caixas (cada uma = fecho convexo dos seus 8 cantos).
-    of_mask: fração da silhueta coberta (o recorte por alpha apaga o que sobra da caixa)."""
-    h, w = mask.shape
+def _hexagon_cover(shape, boxes):
+    """Pixels cobertos pela projeção das caixas (cada uma = fecho convexo dos seus 8 cantos)."""
+    h, w = shape
     vv, uu = np.mgrid[0:h, 0:w] + 0.5
     cover = np.zeros((h, w), bool)
     for box in boxes:
@@ -504,6 +503,13 @@ def hexagon_iou(mask, boxes, of_mask=False):
             (ax, ay), (bx, by) = poly[i], poly[(i + 1) % len(poly)]
             inside &= (bx - ax) * (vv - ay) - (by - ay) * (uu - ax) >= -1e-9
         cover |= inside
+    return cover
+
+
+def hexagon_iou(mask, boxes, of_mask=False):
+    """IoU entre a silhueta e a projeção das caixas (cada uma = fecho convexo dos seus 8 cantos).
+    of_mask: fração da silhueta coberta (o recorte por alpha apaga o que sobra da caixa)."""
+    cover = _hexagon_cover(mask.shape, boxes)
     inter = (cover & mask).sum()
     union = mask.sum() if of_mask else (cover | mask).sum()
     return float(inter) / float(union) if union else 0.0
@@ -598,9 +604,7 @@ def flat_mesh(mask, t=FLAT_THICK, target=FLAT_CELLS):
     x0, y0, x1, y1 = _bbox(mask)
     m = mask[y0:y1, x0:x1]
     c = max(1, int(math.ceil(math.sqrt(max(int(m.sum()), 1) / target))))
-    cin = _cells(m, c)
-    if not cin.any():
-        c, cin = 1, _cells(m, 1)
+    cin = _cells(m, c, 1e-6)   # cobre a silhueta inteira; o alpha recorta a sobra
     R, C = cin.shape
     ii, jj, vid = _grid(cin)
     sx = np.minimum(x0 + jj * c, x1).astype(float)
@@ -779,13 +783,198 @@ def hull_mesh(mask, rho, target=HULL_CELLS):
     return _expand(P, px, tris, _smooth_normals(P, tris))
 
 
+def _plane_mesh(mask, place, target=CARD_CELLS):
+    """Superfície fina sobre a silhueta: grade de células (toda célula com pixel; o alpha recorta) e
+    place(sx, sy) -> pontos (lx, ly, lz) que caem nesses pixels. Dupla face (as duas ordens)."""
+    x0, y0, x1, y1 = _bbox(mask)
+    m = mask[y0:y1, x0:x1]
+    c = max(1, int(math.ceil(math.sqrt(max(int(m.sum()), 1) / target))))
+    cin = _cells(m, c, 1e-6)
+    R, C = cin.shape
+    ii, jj, vid = _grid(cin)
+    sx = np.minimum(x0 + jj * c, x1).astype(float)
+    sy = (y0 + np.minimum(ii * c, y1 - y0)).astype(float)
+    P = place(sx, sy)
+    px = np.stack([sx, sy], 1)
+    tris = []
+    for i in range(R):
+        for j in range(C):
+            if cin[i, j]:
+                a, b, c2, d2 = vid[i, j], vid[i, j + 1], vid[i + 1, j + 1], vid[i + 1, j]
+                tris += [(a, d2, c2), (a, c2, b)]
+    tris = np.array(tris, np.int64)
+    P, px, tris = _compact(P, px, np.concatenate([tris, tris[:, ::-1]]))
+    return _expand(P, px, tris)
+
+
+def _facing_plane(mask, s):
+    """Plano vertical lx + ly = s voltado para a câmera; cada pixel no seu raio do UO (exato)."""
+    h, w = mask.shape
+
+    def place(sx, sy):
+        d = (sx - w / 2) / HT
+        return np.stack([(s + d) / 2, (s - d) / 2, (HT * s + h - 44 - sy) / PZ], 1)
+    return place
+
+
+def cylinder_mesh(mask, segs=16):
+    """Barril, barrica, balde: cilindro vertical no eixo da silhueta, no centro do tile. Objetos redondos
+    são desenhados em 2:1 (a boca é uma elipse com metade da largura de altura), então a altura é a da art
+    menos essa elipse, com 4 px por z. O raio de cada anel sai da largura da silhueta na linha do centro da
+    elipse daquela altura: o bojo do barril aparece. Textura: a mesma projeção 2:1 da art,
+    u = w/2 + 22(lx − ly), v = Y + 11(lx + ly) − 4·lz, com o ponto mais baixo da frente na última linha.
+    -> None se a silhueta não for de cilindro."""
+    h, w = mask.shape
+    x0, y0, x1, y1 = _bbox(mask)
+    W = x1 - x0
+    e = W / 4                                        # meia altura da elipse 2:1
+    H = (y1 - y0 - 2 * e) / PZ
+    if W < 6 or H < 0.5:
+        return None
+    axis = (x0 + x1) / 2
+    rmax = max(axis - x0, x1 - axis) / PXP
+    rows = np.nonzero(mask.any(1))[0]
+
+    def half(v0, v1):
+        # maior afastamento do eixo nas linhas [v0, v1] (silhueta pode ser assimétrica)
+        v0, v1 = min(max(v0, rows[0]), rows[-1]), min(max(v1, rows[0]), rows[-1])
+        cols = np.nonzero(mask[v0:v1 + 1].any(0))[0]
+        return max(axis - cols[0], cols[-1] + 1 - axis) if len(cols) else W / 2
+
+    def radius(lz, top=False):
+        v = int(round(y1 - e - PZ * lz))
+        hw = half(int(y0), int(y0 + 2 * e)) if top else half(v - 1, v + 1)   # topo: a boca inteira
+        return float(np.clip(hw / PXP, 0.35 * rmax, rmax))
+
+    K = int(np.clip(round(H / 1.5), 2, 10))
+    zs = np.linspace(0.0, H, K + 1)
+    rs = np.array([radius(z, k == K) for k, z in enumerate(zs)])
+    # altura final: o fundo do anel de cima encosta na primeira linha da art (frente de baixo na última)
+    H = (y1 - y0 - ART_DEPTH * SQ2 * (rs[0] + rs[-1])) / PZ
+    zs = np.linspace(0.0, H, K + 1)
+    d = (axis - w / 2) / HT
+    cx, cy = (1 + d) / 2, (1 - d) / 2                # eixo: centro do tile na profundidade
+    th = np.linspace(0, 2 * math.pi, segs, endpoint=False)
+    ring = np.stack([np.cos(th), np.sin(th)], 1)
+    # lateral: anéis com normal radial; tampa: anel de cima repetido + centro, normal para cima
+    side = np.concatenate([np.column_stack([cx + r * ring[:, 0], cy + r * ring[:, 1], np.full(segs, z)])
+                           for r, z in zip(rs, zs)])
+    cap = np.concatenate([side[-segs:], [[cx, cy, H]]])
+    P = np.concatenate([side, cap])
+    N = np.concatenate([np.tile(np.column_stack([ring, np.zeros(segs)]), (K + 1, 1)),
+                        np.tile([0.0, 0.0, 1.0], (segs + 1, 1))])
+    tris = []
+    for k in range(K):
+        for i in range(segs):
+            a, b = k * segs + i, k * segs + (i + 1) % segs
+            tris += [(a, b, b + segs), (a, b + segs, a + segs)]
+    c0, mid = len(side), len(P) - 1
+    tris += [(c0 + i, c0 + (i + 1) % segs, mid) for i in range(segs)]
+    tris = np.array(tris, np.int64)   # θ crescente gira de x para y: com z para cima, faces para fora
+    s = P[:, 0] + P[:, 1]
+    Y = y1 - ART_DEPTH * float(s[:segs].max())
+    # a metade de trás da lateral não aparece na art: reusa o pixel do ponto da frente (espelho no eixo)
+    st = np.where((np.arange(len(P)) < len(side)) & (s < cx + cy), 2 * (cx + cy) - s, s)
+    px = np.stack([w / 2 + HT * (P[:, 0] - P[:, 1]), Y + ART_DEPTH * st - PZ * P[:, 2]], 1)
+    return _expand(P, px, tris, N)
+
+
+def bed_mesh(img, H):
+    """Peça de cama: colchão = caixa do tile na altura do tiledata. Do resto da silhueta, o lençol que
+    transborda o tile (cinza/branco, sem saturação) é uma aba horizontal na altura do colchão; a madeira
+    (cabeceira, postes, dossel) é um cartão vertical voltado para a câmera, apoiado no colchão ou no chão."""
+    mask = img != 0
+    h, w = mask.shape
+    box = (0.0, 0.0, 1.0, 1.0, float(H))
+    cover = _hexagon_cover(mask.shape, [box])
+    rest = mask & ~cover
+    parts = [box_mesh(mask, [box])]
+    r, g, b = (img >> 10) & 31, (img >> 5) & 31, img & 31
+    sheet = rest & ((np.maximum(np.maximum(r, g), b) - np.minimum(np.minimum(r, g), b)) <= 3)
+    if sheet.sum() >= 8:
+        def flat_at(sx, sy):   # raio do pixel até z = H
+            d, s = (sx - w / 2) / HT, (sy - (h - 44) + PZ * H) / HT
+            return np.stack([(s + d) / 2, (s - d) / 2, np.full(len(sx), float(H))], 1)
+        parts.append(_plane_mesh(sheet, flat_at))
+    rest &= ~sheet
+    if rest.sum() >= 8:
+        # plano: pela base do resto. Apoiado no colchão (logo abaixo é colchão) é cabeceira/dossel e fica
+        # na borda de trás da cama; no chão (pés, postes da frente), onde a base encosta
+        ss, on_top = [], 0
+        for j in np.nonzero(rest.any(0))[0]:
+            vb = np.nonzero(rest[:, j])[0][-1]
+            top = vb + 1 < h and cover[vb + 1, j]
+            on_top += top
+            ss.append((vb + 1 - (h - 44) + PZ * (H if top else 0.0)) / HT)
+        s = 0.15 if on_top > len(ss) / 2 else float(np.clip(np.median(ss), 0.0, 2.0))
+        parts.append(_plane_mesh(rest, _facing_plane(rest, s)))
+    return tuple(np.concatenate([p[k] for p in parts]) for k in range(3))
+
+
+def rail_mesh(mask):
+    """Corrimão / grade fina: na art, retas de inclinação ±1 são trilhos nos eixos do mapa, então cada
+    trecho fica num plano vertical: descendo para a direita (\\) é o eixo x (ly = c), subindo (/) é o y
+    (lx = c'). Formas: \\, /, Λ (ápice em cima) e V (ápice embaixo), escolhidas pelo contorno de cima de cada
+    coluna; os dois planos se cruzam no ápice. O pixel mais baixo (o pé do pino) fica no chão.
+    -> None se o contorno não for desse tipo."""
+    h, w = mask.shape
+    cols = np.nonzero(mask.any(0))[0]
+    if len(cols) < 6:
+        return None
+    t = np.array([np.nonzero(mask[:, j])[0][0] for j in cols], float)
+    best = None
+    for kind in ('\\', '/', 'A', 'V'):
+        if kind in '\\/':
+            sg = np.full(len(cols), 1.0 if kind == '\\' else -1.0)
+            apex = [0]
+        else:
+            apex = range(2, len(cols) - 2)
+        for a in apex:
+            if kind in 'AV':
+                left = -1.0 if kind == 'A' else 1.0
+                sg = np.where(np.arange(len(cols)) <= a, left, -left)
+            # contorno modelo: t = t[a] + sg·(col − col[a]) por trecho, com deslocamento ótimo (mediana)
+            base = t - sg * (cols - cols[a])
+            err = float(np.mean(np.abs(base - np.median(base))))
+            if best is None or err < best[0]:
+                best = (err, kind, a, sg)
+    err, kind, a, sg = best
+    if err > 1.5:
+        return None
+    ua = float(cols[a]) + 0.5
+    # trecho \\ (sg > 0): plano ly = c; trecho / : plano lx = c + (ua − w/2)/22 (cruzam no ápice).
+    # Nos dois a altura é (base + 44c)/4: c põe o pixel mais baixo da peça (o pé do pino) no chão
+
+    def place(sx, sy, c):
+        xside = (np.where(sx > ua, sg[-1] > 0, sg[0] > 0) if kind in 'AV' else np.full(len(sx), sg[0] > 0))
+        du = (sx - w / 2) / HT
+        cy_ = c + (ua - w / 2) / HT
+        lx = np.where(xside, du + c, cy_)
+        ly = np.where(xside, c, cy_ - du)
+        return np.stack([lx, ly, (HT * (lx + ly) + h - 44 - sy) / PZ], 1)
+
+    vs, us = np.nonzero(mask)
+    c = -float(place(us + 0.5, vs + 1.0, 0.0)[:, 2].min()) * PZ / (2 * HT)
+    return _plane_mesh(mask, lambda sx, sy: place(sx, sy, c))
+
+
 def sprite_mesh(img, tx, cat, sub, name='', height=0, surface=False):
     """-> (motor, (pos, pixel, normal)) em listas de triângulos."""
     mask = img != 0
     arch = archetype(tx, cat, sub)
     rho = tx['default_depth_ratio'].get(f'{cat}/{sub}', tx['category_default_depth_ratio'].get(cat, 0.5))
-    if arch == 'flat':
-        return 'flat', flat_mesh(mask)
+    if arch == 'flat' or (surface and height == 0 and (cat != 'architecture' or sub == 'floor')):
+        return 'flat', flat_mesh(mask)   # tapetes, pentagramas, pisos: superfície sem altura deita no chão
+    if cat == 'container' and sub == 'barrel':
+        mesh = cylinder_mesh(mask)
+        if mesh is not None:
+            return 'cilindro', mesh
+    if cat == 'furniture' and sub == 'bed':
+        return 'cama', bed_mesh(img, height if height > 0 else 5)
+    if re.search(r'display case|\brail|railing|\bfence', name, re.I) and height <= 3 and not surface:
+        mesh = rail_mesh(mask)
+        if mesh is not None:
+            return 'grade', mesh
     if cat == 'furniture' and ((sub == 'table' and surface and height >= 2) or re.search(r'\bbench\b', name, re.I)):
         # mesa, balcão, banco: tampo na altura do tiledata (bancos: centrado no tile)
         box = fit_top_box(mask, height if surface and height >= 2 else None)
