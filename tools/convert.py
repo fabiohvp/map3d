@@ -1386,6 +1386,11 @@ def sprite_mesh(img, tx, cat, sub, name='', height=0, surface=False):
             return 'caixa', box_mesh(mask, boxes)
         hh = max(1.0, (mask.shape[0] - 44 - _bbox(mask)[1]) / 4.0)    # topo do losango = (0,0,H)
         return 'caixa', box_mesh(mask, [(0.0, 0.0, 1.0, 1.0, hh)])
+    x0_, y0_, x1_, y1_ = _bbox(mask)
+    if cat in ('armor', 'clothing') and mask.shape[0] >= 66 and x1_ - x0_ <= 26 and y1_ - y0_ >= 36:
+        # peça pendurada num suporte de parede (art alta e estreita): plano fino voltado para a câmera,
+        # encostado no fundo do tile (perto da parede), em vez de um volume no meio do tile
+        return 'pendurado', _plane_mesh(mask, _facing_plane(mask, 0.7))
     if 'hanging pole' in name.lower() and mask.sum() < 150:
         mesh = rail_mesh(mask, snap=True)        # vara reta presa à parede: plano na borda do tile
         if mesh is not None:
