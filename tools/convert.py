@@ -895,6 +895,19 @@ def ceilings(gx, gy, z, sid, sflags):
     return np.where(hit, np.minimum(k[p] - (cell * 1024 + z + 512), 63), 0)
 
 
+def under_roof(gx, gy, z, sid, sflags, reach=12):
+    """Itens com telhado no mesmo tile de 0 a reach z acima (empenas e oitões, que o 2D esconde junto com
+    o telhado). ceilings() só olha a partir de z + 3 e perde a peça do topo, no z do próprio telhado."""
+    roof = (sflags[sid] & np.uint64(SF_ROOF)) != 0
+    cell = gx.astype(np.int64) * 8192 + gy
+    k = np.sort(cell[roof] * 1024 + z[roof] + 512)
+    if not len(k):
+        return np.zeros(len(sid), bool)
+    q = cell * 1024 + z + 512
+    p = np.minimum(np.searchsorted(k, q), len(k) - 1)
+    return (k[p] >= q) & (k[p] - q <= reach) & ~roof
+
+
 def write_meshes(path, meshes):
     """MSH1: u32 magic, u32 vértices, u32 linhas | linhas × 2048 × i16[4], 2 texels por vértice:
     (lx·256, ly·256, lz·16, 0) (u·8, v·8, normal octaédrica ·32767). Devolve o 1º vértice de cada malha."""
@@ -971,6 +984,7 @@ def build_statics(src, n, W, H, out_map):
     print(f'  malhas: {mtotal} vértices ({mtotal * 16 / 1e6:.1f} MB)')
     partial = ((sflags[sid] & np.uint64(SF_PARTIAL_HUE)) != 0).astype(np.int64)
     ceil = ceilings(gx, gy, z, sid, sflags)
+    hide = (((ceil > 0) & (ceil <= 12)) | under_roof(gx, gy, z, sid, sflags)).astype(np.int64)
 
     # atlas: recorta a bbox opaca e empacota em prateleiras
     trims = {}
@@ -1021,7 +1035,8 @@ def build_statics(src, n, W, H, out_map):
     # chunks STA2: instâncias agrupadas por lote (0 = telhado, k = malhas de até MESH_CLASSES[k] vértices)
     print('gravando chunks de statics...')
     ok = np.isin(sid, list(index))
-    gx, gy, z, sid, hue, tie, partial, ceil = gx[ok], gy[ok], z[ok], sid[ok], hue[ok], tie[ok], partial[ok], ceil[ok]
+    gx, gy, z, sid, hue, tie, partial, ceil, hide = (gx[ok], gy[ok], z[ok], sid[ok], hue[ok], tie[ok], partial[ok],
+                                                     ceil[ok], hide[ok])
     top = int(sid.max()) + 1
     lut = np.zeros(top, np.int64)
     kind_lut = np.zeros(top, np.int64)
@@ -1032,9 +1047,9 @@ def build_statics(src, n, W, H, out_map):
     kind = kind_lut[sid]
     hh = hue & 0x3FFF
     hh = np.where(hh > 3000, 0, hh)
-    # bits 26–31: teto (z até o andar de cima), corta a malha
+    # bit 25: some com os telhados desligados; bits 26–31: teto (z até o andar de cima), corta a malha
     ceil = np.clip(ceil, 0, 63)
-    A = (gx & 63) | ((gy & 63) << 6) | ((z + 128) << 12) | (tie << 20) | (partial << 24) | (ceil << 26)
+    A = (gx & 63) | ((gy & 63) << 6) | ((z + 128) << 12) | (tie << 20) | (partial << 24) | (hide << 25) | (ceil << 26)
     # telhados usam os bits 25–31 para a inclinação vinda dos vizinhos: tem:1 gx:3 gy:3 (×1,5 z, +4)
     has, qx, qy = roof_slopes(gx, gy, z, kind == 0)
     A = np.where(kind == 0, (A & 0x1FFFFFF) | (has << 25) | (qx << 26) | (qy << 29), A).astype('<u4')

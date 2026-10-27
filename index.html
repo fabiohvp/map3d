@@ -342,7 +342,7 @@ float P(uint v) { return float(int(v << 16u) >> 16) / 64.0; }
 vec2 proj(vec3 m, float w, float h) { return vec2(22.0 * (m.x - m.y) + w * 0.5, 22.0 * (m.x + m.y) - 4.0 * m.z + h - 44.0); }
 void main() {
   float cz = float(aA >> 26);
-  if (uKind != 0 && uRoofs == 0 && cz > 0.0 && cz <= 12.0) { gl_Position = OUT; return; }
+  if (uKind != 0 && uRoofs == 0 && ((aA >> 25) & 1u) != 0u) { gl_Position = OUT; return; }   // sob telhado/andar
   int s = int(aB & 0xFFFFu);
   ivec2 b = ivec2((s & 255) * 4, s >> 8);
   uvec4 t0 = texelFetch(uSpr, b, 0), t1 = texelFetch(uSpr, b + ivec2(1, 0), 0);
