@@ -1588,6 +1588,29 @@ def fountain_groups(src, gx, gy, z, sid, snames):
     return out
 
 
+def wall_plane_mesh(img, d):
+    """Peça pendurada de arte frontal (armadura num suporte de parede): plano vertical paralelo à parede
+    (d 1 = parede ao norte, 2 = a oeste), 22 px por tile ao longo dela e 4 px por z, como na tela do UO."""
+    mask = img != 0
+    x0, y0, x1, y1 = _bbox(mask)
+    cx = (x0 + x1) / 2.0
+
+    def place(sx, sy):
+        t = (sx - cx) / HT
+        z = 1.0 + (y1 - sy) / PZ
+        a = np.full_like(t, 0.12)
+        return np.stack([0.5 + t, a, z], 1) if d == 1 else np.stack([a, 0.5 - t, z], 1)
+    return _plane_mesh(mask, place)
+
+
+def hung_sprite(img, cat):
+    """Arte alta e estreita de armadura/roupa: o sprite de peça pendurada num suporte."""
+    if img is None or cat not in ('armor', 'clothing') or img.shape[0] < 66:
+        return False
+    x0, y0, x1, y1 = _bbox(img != 0)
+    return x1 - x0 <= 26 and y1 - y0 >= 36
+
+
 def build_statics(src, n, W, H, out_map):
     print('lendo statics...')
     sflags, sheight, snodraw, snames = src.static_tiledata()
@@ -1613,14 +1636,42 @@ def build_statics(src, n, W, H, out_map):
 
     print('decodificando sprites e gerando malhas...')
     tx = _load_taxonomy()
+    # peças penduradas com parede vizinha viram variantes do sprite (id + 0x10000·lado): o plano acompanha a parede
+    vid = sid.copy()
+    hung = set()
+    for s in np.unique(sid).tolist():
+        nm = snames[s] if s < len(snames) else ''
+        if not re.search(r'tunic|leggings|sleeves|armor|gorget|gloves|helm|cap|shield|robe|dress|cloak|mask|kilt|tabard|sash|cap\b', nm, re.I):
+            continue
+        a_ = src.static_art(s)
+        if a_ is None or not a_.any():
+            continue
+        m_ = a_ != 0
+        bx0, by0, bx1, by1 = _bbox(m_)
+        ar_ = int(m_.sum())
+        cat_, _sub = categorize(tx, nm, int(sflags[s]), ar_, ar_ / ((bx1 - bx0) * (by1 - by0)))
+        if hung_sprite(a_, cat_):
+            hung.add(s)
+    walls = np.array([bool(re.search(r'\bwall\b', n or '', re.I)) for n in snames], bool)
+    wcells = np.unique((gy * W + gx)[walls[np.minimum(sid, len(walls) - 1)]])
+    is_h = np.isin(sid, list(hung))
+    north = is_h & np.isin((gy - 1) * W + gx, wcells)
+    west = is_h & ~north & np.isin(gy * W + gx - 1, wcells)
+    vid = np.where(north, sid + 0x10000, np.where(west, sid + 0x20000, sid))
+    print(f'  {len(hung)} sprites pendurados, {int(is_h.sum())} instâncias, {int(north.sum() + west.sum())} na parede, {len(wcells)} células de parede')
     sprites, imgs, meshes = {}, {}, {}
     engines = {}
     fountain = fountain_groups(src, gx, gy, z, sid, snames)
-    for s in np.unique(sid).tolist():
-        img = src.static_art(s)
+    for s in np.unique(vid).tolist():
+        img = src.static_art(s & 0xFFFF)
         if img is None or not img.any():
             continue
         imgs[s] = img
+        if s >= 0x10000:
+            meshes[s] = wall_plane_mesh(img, s >> 16)
+            sprites[s] = (SK_MESH, None)
+            engines['pendurado'] = engines.get('pendurado', 0) + 1
+            continue
         if s in fountain:
             meshes[s] = fountain[s]
             sprites[s] = (SK_MESH, None)
@@ -1703,17 +1754,18 @@ def build_statics(src, n, W, H, out_map):
 
     # chunks STA2: instâncias agrupadas por lote (0 = telhado, k = malhas de até MESH_CLASSES[k] vértices)
     print('gravando chunks de statics...')
-    ok = np.isin(sid, list(index))
+    ok = np.isin(vid, list(index))
+    vid = vid[ok]
     gx, gy, z, sid, hue, tie, partial, ceil, hide = (gx[ok], gy[ok], z[ok], sid[ok], hue[ok], tie[ok], partial[ok],
                                                      ceil[ok], hide[ok])
-    top = int(sid.max()) + 1
+    top = int(vid.max()) + 1
     lut = np.zeros(top, np.int64)
     kind_lut = np.zeros(top, np.int64)
     for s, i in index.items():
         if s < top:
             lut[s] = i
             kind_lut[s] = 0 if sprites[s][0] == SK_SLOPE else int(np.searchsorted(MESH_CLASSES, nverts[i]))
-    kind = kind_lut[sid]
+    kind = kind_lut[vid]
     hh = hue & 0x3FFF
     hh = np.where(hh > 3000, 0, hh)
     # bit 25: some com os telhados desligados; bits 26–31: teto (z até o andar de cima), corta a malha
@@ -1722,7 +1774,7 @@ def build_statics(src, n, W, H, out_map):
     # telhados usam os bits 25–31 para a inclinação vinda dos vizinhos: tem:1 gx:3 gy:3 (×1,5 z, +4)
     has, qx, qy = roof_slopes(gx, gy, z, kind == 0)
     A = np.where(kind == 0, (A & 0x1FFFFFF) | (has << 25) | (qx << 26) | (qy << 29), A).astype('<u4')
-    B = (lut[sid] | (hh << 16)).astype('<u4')
+    B = (lut[vid] | (hh << 16)).astype('<u4')
     cw, ch = -(-W // CHUNK), -(-H // CHUNK)
     cid = (gy // CHUNK) * cw + gx // CHUNK
     order = np.lexsort((kind, cid))
