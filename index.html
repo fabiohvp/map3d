@@ -444,6 +444,16 @@ gl.bindVertexArray(null);
 let kindVerts = [6];
 const statics = { ready: false, sprTex: null, meshTex: null, atlas: null, atlasSize: 4096, hueTex: null, exists: null };
 
+// itens avulsos (ex.: item dinâmico do servidor) por ?items=sprite:lote:x:y:z[:hue],...
+// sprite/lote vêm de tools/sprite_lookup.py (graphic -> índice em sprites.bin)
+const extraItems = (new URLSearchParams(location.search).get('items') || '').split(',').filter(Boolean).map((s) => {
+  const [spr, kind, x, y, z, hue = 0] = s.split(':').map(Number);
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Uint32Array([(x & 63) | ((y & 63) << 6) | ((z + 128) << 12), spr | (hue << 16)]), gl.STATIC_DRAW);
+  return { buf, kind, ox: x - (x & 63), oy: y - (y & 63) };
+});
+
 // SPR1: u32 magic, u32 n, u32 linhas (múltiplo de 256), 16 × u16 por sprite → textura RGBA16UI 1024 × linhas/256
 function loadSprites(buf) {
   const rows = new DataView(buf).getUint32(8, true);
@@ -838,6 +848,15 @@ function frame(now) {
         gl.drawArraysInstanced(gl.TRIANGLES, 0, kindVerts[k], n);
         inst += n;
       }
+      for (const it of extraItems) {
+        if (it.kind !== k) continue;
+        gl.bindBuffer(gl.ARRAY_BUFFER, it.buf);
+        gl.vertexAttribIPointer(0, 1, gl.UNSIGNED_INT, 0, 0);
+        gl.vertexAttribIPointer(1, 1, gl.UNSIGNED_INT, 0, 4);
+        gl.uniform2f(SU.uOrigin, it.ox, it.oy);
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, kindVerts[k], 1);
+        inst++;
+      }
     }
   }
 
@@ -881,6 +900,9 @@ function frame(now) {
   }
   const m = /^#(\d+),(\d+)$/.exec(location.hash);
   if (m) setTarget(+m[1], +m[2]); else setTarget(...manifest.start);
+  const q = new URLSearchParams(location.search);
+  if (q.has('dist')) cam.dist = +q.get('dist');
+  if (q.has('pitch')) cam.pitch = +q.get('pitch');
   addEventListener('hashchange', () => { const h = /^#(\d+),(\d+)$/.exec(location.hash); if (h) setTarget(+h[1], +h[2]); });
   setupUI();
   requestAnimationFrame(frame);
