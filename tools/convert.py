@@ -14,7 +14,7 @@ Saída:
     data/map<N>/radar.png       minimapa (1 px a cada 4 tiles)
     data/map<N>/terrain/{cx}_{cy}.bin   TRN1, um por chunk 64x64 não-void
 """
-import argparse, base64, json, os, struct, sys, time, zlib
+import argparse, base64, json, math, os, re, struct, sys, time, zlib
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -195,15 +195,19 @@ def write_tex(path, size, layers):
 NODRAW_STATIC = {0x0001, 0x21BC, 0x63D3} | set(range(0x2198, 0x21A5))
 SF_BACKGROUND, SF_WALL, SF_IMPASSABLE, SF_SURFACE, SF_BRIDGE = 0x1, 0x10, 0x40, 0x200, 0x400
 SF_PARTIAL_HUE, SF_ROOF, SF_DOOR = 0x40000, 0x10000000, 0x20000000
-SK_BOX, SK_FLAT, SK_SLOPE, SK_BILL = 0, 1, 2, 3
+SK_MESH, SK_SLOPE = 0, 2
 ATLAS = 4096
 GUTTER = 2
+TILE_FLAGS = ('Background', 'Weapon', 'Transparent', 'Translucent', 'Wall', 'Damaging', 'Impassable', 'Wet',
+              'Unknown1', 'Surface', 'Bridge', 'Generic', 'Window', 'NoShoot', 'ArticleA', 'ArticleAn', 'Internal',
+              'Foliage', 'PartialHue', 'NoHouse', 'Map', 'Container', 'Wearable', 'LightSource', 'Animation',
+              'HoverOver', 'NoDiagonal', 'Armor', 'Roof', 'Door', 'StairBack', 'StairRight')
 
 
 def read_tiledata_static(client):
     td = open(os.path.join(client, 'tiledata.mul'), 'rb').read()
     off = 512 * (4 + 32 * 30)
-    flags, height, nodraw = [], [], []
+    flags, height, names = [], [], []
     while off + 4 <= len(td):
         off += 4
         for _ in range(32):
@@ -211,9 +215,10 @@ def read_tiledata_static(client):
                 break
             flags.append(struct.unpack_from('<Q', td, off)[0])
             height.append(td[off + 20])
-            nodraw.append(td[off + 21:off + 41].split(b'\0')[0].strip().lower() == b'nodraw')
+            names.append(td[off + 21:off + 41].split(b'\0')[0].decode('latin-1').strip())
             off += 41
-    return np.array(flags, np.uint64), np.array(height, np.uint8), np.array(nodraw, bool)
+    nodraw = np.array([n.lower() == 'nodraw' for n in names], bool)
+    return np.array(flags, np.uint64), np.array(height, np.uint8), nodraw, names
 
 
 def read_statics(client, n, W, H):
@@ -265,27 +270,6 @@ def decode_static_art(d):
     return img
 
 
-def ground_contour(mask):
-    """Contorno inferior da art projetado no chão (lz=0) -> (lx, ly) locais ao tile."""
-    h, w = mask.shape
-    cols = np.nonzero(mask.any(0))[0]
-    bot = h - 1 - np.argmax(mask[::-1, cols], axis=0)
-    a = (cols + 0.5 - w / 2) / 22
-    s = (bot + 1 - h + 44) / 22
-    return (a + s) / 2, (s - a) / 2
-
-
-def flat_extent(mask, lz):
-    """Retângulo (lx0, ly0, lx1, ly1) do plano lz que cobre todos os pixels opacos."""
-    h, w = mask.shape
-    v, u = np.nonzero(mask)
-    d1 = (u + 0.5 - w / 2) / 22
-    d2 = (v + 0.5 - h + 44 + 4 * lz) / 22
-    lx, ly = (d1 + d2) / 2, (d2 - d1) / 2
-    p = 0.03
-    return float(lx.min() - p), float(ly.min() - p), float(lx.max() + p), float(ly.max() + p)
-
-
 SLOPES = (-24, -12, -6, -3, 0, 3, 6, 12, 24)
 
 
@@ -322,85 +306,471 @@ def fit_slope(mask):
     return min((k for k in cands if k[0] >= top - 0.02), key=lambda k: (abs(k[3]) + abs(k[4]), -k[0]))
 
 
-def classify_sprite(img, flags, td_height):
-    """-> (kind, params[6], qualidade) em unidades locais (tile, tile, z)."""
+# ---- malhas reconstruídas da art (motores do assets3d do uo3d2)
+# A art do UO é uma projeção oblíqua: o ponto (lx, ly, lz) local ao tile (lx, ly em tiles, canto norte
+# na origem; lz em unidades de z) cai no pixel
+#     u = 22(lx − ly) + w/2      v = 22(lx + ly) − 4·lz + h − 44
+# Cada sprite vira uma malha neste referencial; a textura de cada vértice é o pixel do sprite na câmera
+# do UO (faces que a câmera não vê reusam o pixel da face oposta). Motores:
+#   box     caixa medida do hexágono da silhueta (pegada a × b e altura saem da art, nada é chutado)
+#   hull    "almofada" fechada inflada da silhueta; a casca da frente reprojeta exatamente no sprite
+#   flat    silhueta deitada no chão (tapetes, decalques, pisos que não fecham como caixa)
+#   card    casco fino (efeitos, armas, quadros e sprites esparsos)
+HT = 22.0
+SQ2 = 2 ** 0.5
+PXP = HT * SQ2           # px por tile no eixo horizontal da tela
+PZ = 4.0                 # px por unidade de z
+METRIC_Z = 0.1           # 1 z = 0,1 tile: referencial "métrico" das normais
+MIN_DIM = 0.08
+HULL_CELLS = 32          # células da grade do casco (o assets3d usa 420; aqui são milhões de instâncias)
+CARD_CELLS = 16          # casco fino: o recorte da art (alpha) já dá a silhueta
+FLAT_CELLS = 12
+FLAT_THICK = 0.4         # espessura do slab deitado, em z
+MESH_CLASSES = (6, 36, 96, 192, 384, 768, 1536, 3072)   # vértices por instância de cada lote; 0 = telhado
+MESH_MAX = MESH_CLASSES[-1]
+
+
+def _load_taxonomy():
+    tx = json.load(open(os.path.join(HERE, 'taxonomy.json'), encoding='utf-8'))
+    tx['_names'] = [(c, s, re.compile(p, re.I)) for c, s, p in tx['name_rules']]
+    return tx
+
+
+def categorize(tx, name, flags, area, fill):
+    """Categoria/subcategoria do assets3d: regras de nome, depois de flags; confiança baixa = unknown."""
+    fl = {TILE_FLAGS[b] for b in range(32) if flags >> b & 1}
+    cat = sub = None
+    conf = 0.0
+    for c, s, rx in tx['_names']:
+        if name and rx.search(name):
+            cat, sub, conf = c, s, 0.88
+            break
+    for c, s, need, fc in tx['flag_rules']:
+        if set(need) <= fl:
+            if cat is None:
+                cat, sub, conf = c, s, fc
+            elif (c, s) != (cat, sub) and c != cat:
+                # o nome vence, a não ser que as flags sejam estruturais (telhado/porta/janela)
+                if s in ('roof', 'door', 'window') and fc >= 0.8:
+                    cat, sub, conf = c, s, fc
+            break
+    if cat is None or conf < tx['min_confidence']:
+        cat, sub = 'unknown', 'unknown'
+    if cat != 'architecture' and ({'Surface', 'Background'} <= fl or {'Surface', 'Bridge'} <= fl):
+        cat, sub = 'architecture', 'floor'  # piso pelas flags (o nome "wooden planks" casava com recurso)
+    sr = tx['sparse_rule']
+    if cat in sr['categories'] and (area < sr['max_area'] or fill < sr['max_fill']):
+        cat, sub = 'effect', 'decal'        # faíscas, decalques, entulho: sem volume sólido
+    return cat, sub
+
+
+def archetype(tx, cat, sub):
+    if cat == 'terrain':
+        return 'box'
+    if f'{cat}/{sub}' == 'decoration/rug':
+        return 'flat'
+    m = tx['archetype_by_subcategory']
+    a = m.get(f'{cat}/{sub}') or m.get(f'{cat}/*') or m['*']
+    return {'box_iso': 'box', 'visual_hull': 'hull', 'billboard': 'card', 'terrain_tile': 'box'}[a]
+
+
+def _bbox(mask):
+    ys, xs = np.nonzero(mask.any(1))[0], np.nonzero(mask.any(0))[0]
+    return int(xs[0]), int(ys[0]), int(xs[-1]) + 1, int(ys[-1]) + 1
+
+
+def _proj(P, w, h):
+    return np.stack([HT * (P[:, 0] - P[:, 1]) + w / 2, HT * (P[:, 0] + P[:, 1]) - PZ * P[:, 2] + h - 44], 1)
+
+
+def _metric(P):
+    return P * np.array([1.0, 1.0, METRIC_Z])
+
+
+def _face_normals(P, tris):
+    M = _metric(P)
+    return np.cross(M[tris[:, 1]] - M[tris[:, 0]], M[tris[:, 2]] - M[tris[:, 0]])
+
+
+def _expand(P, px, tris, nrm=None):
+    """Malha indexada -> lista de triângulos (pos, pixel, normal unitária). Sem nrm: normal da face."""
+    if nrm is None:
+        fn = _face_normals(P, tris)
+        n = np.repeat(fn, 3, 0)
+    else:
+        n = nrm[tris.ravel()]
+    n = n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-12)
+    return P[tris.ravel()], px[tris.ravel()], n
+
+
+def fit_box(mask):
+    """Caixa [x0, x1] × [y0, y1] × [0, H] cuja projeção é a silhueta: largura = 22(a + b), o vértice de
+    baixo fica 11(a − b) à direita do centro e a altura é o que sobra acima da pegada."""
+    h, w = mask.shape
+    bx0, by0, bx1, by1 = _bbox(mask)
+    s = (bx1 - bx0) / HT
+    cols = np.nonzero(mask[max(by1 - 3, by0):by1, bx0:bx1].any(0))[0]
+    d = (cols.mean() + 0.5 - (bx1 - bx0) / 2) / (HT / 2) if len(cols) else 0.0
+    lim = max(s - 2 * MIN_DIM, 0.0)
+    d = float(np.clip(d, -lim, lim))
+    a, b = max((s + d) / 2, MIN_DIM), max((s - d) / 2, MIN_DIM)
+    sum1 = (by1 - h + 44) / HT                  # x1 + y1: vértice de baixo na última linha
+    dif1 = (bx0 + HT * a - w / 2) / HT          # x1 − y1
+    x1, y1 = (sum1 + dif1) / 2, (sum1 - dif1) / 2
+    x0, y0 = x1 - a, y1 - b
+    H = max((HT * (x0 + y0) + h - 44 - by0) / PZ, 0.2)
+    return x0, y0, x1, y1, H
+
+
+def _box_corners(x0, y0, x1, y1, H):
+    return np.array([(x, y, z) for z in (0.0, H) for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))])
+
+
+def _convex(pts):
+    pts = sorted(set(map(tuple, np.round(pts, 6))))
+    cross = lambda o, a, b: (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    lo, hi = [], []
+    for p in pts:
+        while len(lo) >= 2 and cross(lo[-2], lo[-1], p) <= 0:
+            lo.pop()
+        lo.append(p)
+    for p in reversed(pts):
+        while len(hi) >= 2 and cross(hi[-2], hi[-1], p) <= 0:
+            hi.pop()
+        hi.append(p)
+    return lo[:-1] + hi[:-1]
+
+
+def hexagon_iou(mask, boxes):
+    """IoU entre a silhueta e a projeção das caixas (cada uma = fecho convexo dos seus 8 cantos)."""
+    h, w = mask.shape
+    vv, uu = np.mgrid[0:h, 0:w] + 0.5
+    cover = np.zeros((h, w), bool)
+    for box in boxes:
+        poly = _convex(_proj(_box_corners(*box), w, h))
+        inside = np.ones((h, w), bool)
+        for i in range(len(poly)):
+            (ax, ay), (bx, by) = poly[i], poly[(i + 1) % len(poly)]
+            inside &= (bx - ax) * (vv - ay) - (by - ay) * (uu - ax) >= -1e-9
+        cover |= inside
+    inter = (cover & mask).sum()
+    union = (cover | mask).sum()
+    return float(inter) / float(union) if union else 0.0
+
+
+WALL_LIKE = {'architecture/wall', 'architecture/window', 'architecture/door', 'architecture/fence',
+             'architecture/column', 'architecture/bridge'}
+WALL_T = 0.16            # espessura das paredes do UO (as retas medem 0,14–0,16 tile)
+
+
+def fit_boxes(mask, corners):
+    """Caixa medida ou, para peças de canto, um L de duas paredes finas nas bordas da caixa:
+    sul + leste (V, encontro na frente) ou norte + oeste (Λ, encontro atrás). -> (caixas, IoU)."""
+    x0, y0, x1, y1, H = box = fit_box(mask)
+    cands = [[box]]
+    if corners and x1 - x0 > 2.5 * WALL_T and y1 - y0 > 2.5 * WALL_T:
+        t = WALL_T
+        h = mask.shape[0]
+        top = np.nonzero(mask.any(1))[0][0]
+        for pair in (((x0, y1 - t, x1, y1), (x1 - t, y0, x1, y1 - t)), ((x0, y0, x1, y0 + t), (x0, y0 + t, x0 + t, y1))):
+            # altura: o canto de trás mais alto das duas paredes encosta no topo da art
+            hv = max((HT * min(b[0] + b[1] for b in pair) + h - 44 - top) / PZ, 0.2)
+            cands.append([b + (hv,) for b in pair])
+    # o L só vence a caixa com folga
+    scored = [(hexagon_iou(mask, c), c) for c in cands]
+    best = max(scored, key=lambda k: k[0] - 0.03 * (len(k[1]) > 1))
+    return best[1], best[0]
+
+
+def box_mesh(mask, boxes):
+    """6 faces por caixa; oeste, norte e base não aparecem na art e reusam o pixel da face oposta."""
+    h, w = mask.shape
+    meshes = [_box_mesh(w, h, *b) for b in boxes]
+    return tuple(np.concatenate([m[k] for m in meshes]) for k in range(3))
+
+
+def _box_mesh(w, h, x0, y0, x1, y1, H):
+    faces = (  # (quad, coordenada fixa que o pixel copia da face oposta)
+        (((x0, y0, H), (x1, y0, H), (x1, y1, H), (x0, y1, H)), None),
+        (((x0, y0, 0), (x1, y0, 0), (x1, y1, 0), (x0, y1, 0)), (2, H)),
+        (((x1, y0, 0), (x1, y1, 0), (x1, y1, H), (x1, y0, H)), None),
+        (((x0, y0, 0), (x0, y1, 0), (x0, y1, H), (x0, y0, H)), (0, x1)),
+        (((x0, y1, 0), (x1, y1, 0), (x1, y1, H), (x0, y1, H)), None),
+        (((x0, y0, 0), (x1, y0, 0), (x1, y0, H), (x0, y0, H)), (1, y1)),
+    )
+    P, S = [], []
+    for quad, mirror in faces:
+        q = np.array(quad, float)
+        s = q.copy()
+        if mirror:
+            s[:, mirror[0]] = mirror[1]
+        P.append(q)
+        S.append(s)
+    P, S = np.concatenate(P), np.concatenate(S)
+    tris = np.array([(k, k + 1, k + 2) for k in range(0, 24, 4)] + [(k, k + 2, k + 3) for k in range(0, 24, 4)])
+    return _expand(P, _proj(S, w, h), tris)
+
+
+def _cells(mask, c):
+    h, w = mask.shape
+    R, C = -(-h // c), -(-w // c)
+    pad = np.zeros((R * c, C * c), np.float32)
+    pad[:h, :w] = mask
+    return pad.reshape(R, c, C, c).mean(axis=(1, 3)) >= 0.3
+
+
+def _grid(cin):
+    R, C = cin.shape
+    exists = np.zeros((R + 1, C + 1), bool)
+    for dy in (0, 1):
+        for dx in (0, 1):
+            exists[dy:dy + R, dx:dx + C] |= cin
+    ii, jj = np.nonzero(exists)
+    vid = -np.ones(exists.shape, np.int64)
+    vid[ii, jj] = np.arange(len(ii))
+    return ii, jj, vid
+
+
+def _compact(P, px, tris, min_area=1e-10):
+    ok = ~((tris[:, 0] == tris[:, 1]) | (tris[:, 1] == tris[:, 2]) | (tris[:, 0] == tris[:, 2]))
+    tris = tris[ok]
+    tris = tris[np.linalg.norm(_face_normals(P, tris), axis=1) > min_area]
+    used = np.unique(tris)
+    remap = -np.ones(len(P), np.int64)
+    remap[used] = np.arange(len(used))
+    return P[used], px[used], remap[tris]
+
+
+def flat_mesh(mask, t=FLAT_THICK, target=FLAT_CELLS):
+    """Silhueta desprojetada no chão: pele de cima (na altura t), base e paredes laterais na borda."""
+    h, w = mask.shape
+    x0, y0, x1, y1 = _bbox(mask)
+    m = mask[y0:y1, x0:x1]
+    c = max(1, int(math.ceil(math.sqrt(max(int(m.sum()), 1) / target))))
+    cin = _cells(m, c)
+    if not cin.any():
+        c, cin = 1, _cells(m, 1)
+    R, C = cin.shape
+    ii, jj, vid = _grid(cin)
+    sx = np.minimum(x0 + jj * c, x1).astype(float)
+    sy = (y0 + np.minimum(ii * c, y1 - y0)).astype(float)
+
+    def ground(z):
+        d = (sx - w / 2) / HT                       # lx − ly
+        s = (sy - (h - 44) + PZ * z) / HT           # lx + ly
+        return np.stack([(s + d) / 2, (s - d) / 2, np.full(len(sx), z)], 1)
+
+    n = len(sx)
+    P = np.concatenate([ground(t), ground(0.0)])
+    px = np.concatenate([np.stack([sx, sy], 1)] * 2)
+    tris = []
+    for i in range(R):
+        for j in range(C):
+            if not cin[i, j]:
+                continue
+            a, b, d, e = vid[i, j], vid[i, j + 1], vid[i + 1, j + 1], vid[i + 1, j]
+            tris += [(a, e, d), (a, d, b), (n + a, n + b, n + d), (n + a, n + d, n + e)]
+            for p, q, (ni, nj) in ((a, b, (i - 1, j)), (b, d, (i, j + 1)), (d, e, (i + 1, j)), (e, a, (i, j - 1))):
+                if not (0 <= ni < R and 0 <= nj < C and cin[ni, nj]):
+                    tris += [(p, q, n + q), (p, n + q, n + p)]
+    P, px, tris = _compact(P, px, np.array(tris, np.int64))
+    return _expand(P, px, tris)
+
+
+def _chamfer(zero):
+    """Distância (em células) de cada vértice ao zero mais próximo; chamfer 1 / √2 em duas passadas."""
+    H, W = zero.shape
+    d = np.where(zero, 0.0, 1e9)
+    for i in range(H):
+        for j in range(W):
+            if d[i, j] == 0:
+                continue
+            v = d[i, j]
+            if i > 0:
+                v = min(v, d[i - 1, j] + 1)
+                if j > 0:
+                    v = min(v, d[i - 1, j - 1] + SQ2)
+                if j < W - 1:
+                    v = min(v, d[i - 1, j + 1] + SQ2)
+            if j > 0:
+                v = min(v, d[i, j - 1] + 1)
+            d[i, j] = v
+    for i in range(H - 1, -1, -1):
+        for j in range(W - 1, -1, -1):
+            v = d[i, j]
+            if i < H - 1:
+                v = min(v, d[i + 1, j] + 1)
+                if j > 0:
+                    v = min(v, d[i + 1, j - 1] + SQ2)
+                if j < W - 1:
+                    v = min(v, d[i + 1, j + 1] + SQ2)
+            if j < W - 1:
+                v = min(v, d[i, j + 1] + 1)
+            d[i, j] = v
+    return d
+
+
+def _local_radius(d, window):
+    """Raio do maior disco inscrito que cobre cada vértice (máx. de d(u) com |u − v| <= d(u))."""
+    H, W = d.shape
+    r = d.copy()
+    for dy in range(-window, window + 1):
+        for dx in range(-window, window + 1):
+            dist = math.hypot(dy, dx)
+            if dist == 0 or dist > window:
+                continue
+            vs0, vs1 = max(0, -dy), H - max(0, dy)
+            us0, us1 = max(0, -dx), W - max(0, dx)
+            if vs1 <= vs0 or us1 <= us0:
+                continue
+            sh = np.zeros_like(d)
+            sh[vs0:vs1, us0:us1] = d[vs0 + dy:vs1 + dy, us0 + dx:us1 + dx]
+            r = np.maximum(r, np.where(sh >= dist, sh, 0.0))
+    return r
+
+
+def _smooth_normals(P, tris):
+    fn = _face_normals(P, tris)
+    acc = np.zeros_like(P)
+    for k in range(3):
+        np.add.at(acc, tris[:, k], fn)
+    ln = np.linalg.norm(acc, axis=1)
+    bad = ln < 1e-9 * max(1.0, float(np.abs(fn).max()))
+    if bad.any():
+        # vértices soldados na costura: frente e verso se anulam -> aponta para fora dos vizinhos
+        M = _metric(P)
+        nsum, ncnt = np.zeros_like(M), np.zeros(len(M))
+        for a, b in ((0, 1), (1, 2), (2, 0)):
+            np.add.at(nsum, tris[:, a], M[tris[:, b]])
+            np.add.at(ncnt, tris[:, a], 1)
+            np.add.at(nsum, tris[:, b], M[tris[:, a]])
+            np.add.at(ncnt, tris[:, b], 1)
+        away = M - nsum / np.maximum(ncnt, 1)[:, None]
+        away[np.linalg.norm(away, axis=1) < 1e-9] = (0.0, 0.0, 1.0)
+        acc[bad] = away[bad]
+    return acc
+
+
+def hull_mesh(mask, rho, target=HULL_CELLS, lean=1.0):
+    """Casco fechado inflado da silhueta. Espessura T(v) = ρ·√(d(2r − d)), d = distância à borda e r = raio
+    inscrito local. Cada vértice da frente fica no raio da câmera do seu pixel; o verso espelha a frente
+    em torno do plano médio (soldado na borda) e desce para projetar dentro da frente. A borda de baixo
+    conta como interior (espelhada para baixo): base chata, apoiada em lz = 0."""
+    h, w = mask.shape
+    ax, ay = w / 2, h - 44
+    x0, y0, x1, y1 = _bbox(mask)
+    m = mask[y0:y1, x0:x1]
+    c = max(1, int(math.ceil(math.sqrt(max(int(m.sum()), 1) / target))))
+    cin = _cells(m, c)
+    if not cin.any():
+        c, cin = 1, _cells(m, 1)
+    R, C = cin.shape
+    padc = np.zeros((2 * R + 2, C + 2), bool)
+    padc[1:R + 1, 1:C + 1] = cin
+    padc[R + 1:2 * R + 1, 1:C + 1] = cin[::-1]
+    near_in = np.zeros((2 * R + 3, C + 3), bool)
+    near_out = np.zeros_like(near_in)
+    for dy in (0, 1):
+        for dx in (0, 1):
+            near_in[dy:dy + padc.shape[0], dx:dx + padc.shape[1]] |= padc
+            near_out[dy:dy + padc.shape[0], dx:dx + padc.shape[1]] |= ~padc
+    d = _chamfer((~near_in) | near_out)
+    r_loc = _local_radius(d, int(min(24, max(2, math.ceil(d.max())))))
+    d_px, r_px = d * c, np.maximum(r_loc * c, 1e-6)
+    T = rho * np.sqrt(np.clip(d_px * (2 * r_px - d_px), 0, None)) / PXP
+    Tv = T[1:R + 2, 1:C + 2]
+
+    ii, jj, vid = _grid(cin)
+    sx = np.minimum(x0 + jj * c, x1).astype(float)
+    sy = (y0 + np.minimum(ii * c, y1 - y0)).astype(float)
+    Tf = Tv[ii, jj]
+    p = (sx - ax) / PXP
+
+    def unproj(q):
+        return (q + p) / SQ2, (q - p) / SQ2, (ay + PXP * q - sy) / PZ
+
+    q_c = -float(unproj(Tf)[2].min()) * PZ / PXP     # aterra: o ponto mais baixo fica em lz = 0
+    fx, fy, fz = unproj(q_c + Tf)
+    front = np.stack([fx, fy, fz], 1)
+    qb = q_c - Tf
+    back = np.stack([(qb + p) / SQ2, (qb - p) / SQ2, np.maximum(fz - lean * 2 * Tf * PXP / PZ, 0.0)], 1)
+    interior = Tf > 1e-4
+    nF = len(front)
+    back_idx = np.where(interior, nF + np.cumsum(interior) - 1, np.arange(nF))
+    P = np.concatenate([front, back[interior]])
+    px = np.stack([sx, sy], 1)
+    px = np.concatenate([px, px[interior]])
+    tris = []
+    for i in range(R):
+        for j in range(C):
+            if cin[i, j]:
+                a, b, c2, d2 = vid[i, j], vid[i, j + 1], vid[i + 1, j + 1], vid[i + 1, j]
+                tris += [(a, d2, c2), (a, c2, b)]
+    tris = np.array(tris, np.int64)
+    if (_face_normals(P, tris) @ np.array([1.0, 1.0, 0.8])).sum() < 0:   # frente virada para a câmera
+        tris = tris[:, ::-1]
+    tris = np.concatenate([tris, back_idx[tris[:, ::-1]]])
+    P, px, tris = _compact(P, px, tris)
+    return _expand(P, px, tris, _smooth_normals(P, tris))
+
+
+def sprite_mesh(img, tx, cat, sub):
+    """-> (motor, (pos, pixel, normal)) em listas de triângulos."""
     mask = img != 0
-    h, w = mask.shape
-    lx, ly = ground_contour(mask)
-    full = lx.min() < 0.15 and ly.min() < 0.15 and lx.max() > 0.85 and ly.max() > 0.85
-    if flags & SF_ROOF:
-        iou, e, c, sx, sy = fit_slope(mask)
-        return SK_SLOPE, (e, c, sx, sy, 0, 0), iou
-    # só estrutura ganha geometria (caixa): parede, porta e pisos/escadas/plataformas (Background
-    # ou Bridge) com altura real (> 0). Tapetes e pisos rentes ao chão (td_height == 0) ficam planos.
-    is_wall_door = bool(flags & (SF_WALL | SF_DOOR))
-    is_surface = bool(full and (flags & (SF_BACKGROUND | SF_BRIDGE)))
-    if is_wall_door or (is_surface and td_height > 0):
-        x0 = 0.0 if lx.min() < 0.15 else min(float(lx.min()), 0.92)
-        y0 = 0.0 if ly.min() < 0.15 else min(float(ly.min()), 0.92)
-        vmin = np.nonzero(mask.any(1))[0].min()
-        # altura da tiledata quando existe (mesa = 6): estimar pela art põe o tampo baixo demais
-        # e as pernas acabam pintadas na face de cima
-        hb_art = max(0.0, (22 * (x0 + y0) + h - 44 - vmin) / 4)
-        hb = float(td_height) if td_height > 0 else hb_art
-        if is_wall_door:
-            # parede/porta: peças de arremate/frontão têm art muito mais baixa que a altura da tiledata (20)
-            if td_height == 20 and hb_art < 10:
-                hb = max(1.0, hb_art)
-            else:
-                hb = max(hb, hb_art)
-        elif hb_art > hb + 3:
-            # Background/Bridge com art bem mais alta que a caixa (tronco de árvore com copa, poste...):
-            # numa caixa a copa seria pintada deitada na face de cima; fica com o casco visual
-            return hull_box(mask, td_height)
-        if hb >= 0.5:
-            return SK_BOX, (x0, y0, hb, 0, 0, 0), 1.0
-        return SK_FLAT, flat_extent(mask, 0.0) + (0.0, 0), 1.0
-    # itens baixos (td_height <= 2): só viram plano se NÃO forem intransitáveis (móveis como camas/mesas têm SF_IMPASSABLE)
-    if td_height <= 2 and not (flags & SF_IMPASSABLE):
-        ext = flat_extent(mask, float(td_height))
-        if min(ext[:2]) >= -0.3 and max(ext[2:]) <= 1.3:
-            return SK_FLAT, ext + (float(td_height), 0), 1.0
-        # não cabe deitado no tile: quadro, escudo, estandarte, placa... → plano vertical
-        kind, params, q = vertical_plane(mask)
-        return (kind, params, q) if kind == SK_FLAT else hull_box(mask, td_height)
-    return hull_box(mask, td_height)
+    arch = archetype(tx, cat, sub)
+    rho = tx['default_depth_ratio'].get(f'{cat}/{sub}', tx['category_default_depth_ratio'].get(cat, 0.5))
+    if arch == 'flat':
+        return 'flat', flat_mesh(mask)
+    if arch == 'box':
+        # o fragment shader descarta os pixels transparentes da art: janelas, arcos e recortes ficam
+        # vazados e a caixa de arquitetura só precisa acertar a pegada (o assets3d, sem esse corte, pede 0,8)
+        kind = f'{cat}/{sub}'
+        boxes, iou = fit_boxes(mask, kind in WALL_LIKE)
+        need = {'architecture/stairs': 0.6, 'furniture/bed': 0.6}.get(kind, 0.5 if kind in WALL_LIKE else 0.8)
+        if iou >= need:
+            return 'box' if len(boxes) == 1 else 'canto', box_mesh(mask, boxes)
+        if kind in ('architecture/floor', 'architecture/bridge'):   # superfície pisável: casco vira almofada
+            return 'flat', flat_mesh(mask)
+        arch = 'hull'
+    fill = mask.sum() / max(1, np.prod(np.ptp(np.argwhere(mask), 0) + 1))
+    if arch == 'card' or fill < 0.33:
+        return 'card', _hull_fit(mask, min(rho, 0.08), CARD_CELLS)
+    return 'hull', _hull_fit(mask, rho, HULL_CELLS)
 
 
-def hull_box(mask, td_height):
-    """Caixa do casco visual: o viewer marcha raios dentro dela e um ponto é sólido quando sua
-    projeção isométrica (e a do item girado 180° em torno do centro da caixa) cai num pixel opaco
-    da art. Base [-a, 1 + a]² (a > 0 quando a art é mais larga que o tile). Topo justo: a altura da
-    tiledata ou a menor que ainda alcança o pixel do topo no canto de trás da base; caixa alta
-    demais vira "telhado" (o raio extrudado acima do objeto). params = (x0, y0, x1, y1, z0, z1)."""
-    h, w = mask.shape
-    v, u = np.nonzero(mask)
-    a = max(0.0, (float(np.abs(np.r_[u, u + 1] - w / 2).max()) / 22 - 1) / 2)
-    z_top = max(1.0, float(td_height), (h - 44 - float(v.min())) / 4 - 11 * a + 0.5)
-    return SK_BILL, (-a, -a, 1 + a, 1 + a, 0.0, z_top), 1.0
+def _hull_fit(mask, rho, target):
+    while True:
+        mesh = hull_mesh(mask, rho, target)
+        if len(mesh[0]) <= MESH_MAX or target <= 4:
+            return mesh
+        target //= 2
 
 
-def vertical_plane(mask):
-    """Plano vertical que reproduz a art: x = c (modo 1) ou y = c (modo 2), escolhido pela
-    inclinação da borda superior da silhueta (±1 na projeção). Fica em c ≥ 1.02, logo à frente
-    da face visível (leste/sul) da parede do tile; arte simétrica ou que encosta no chão fica com SK_BILL (casco visual).
-    params = (s0, z0, s1, z1, c, modo), s = coordenada ao longo do plano."""
-    h, w = mask.shape
-    cols = np.nonzero(mask.any(0))[0]
-    top = np.argmax(mask[:, cols], axis=0)
-    slope = np.polyfit(cols, top, 1)[0] if len(cols) > 1 else 0.0
-    if abs(slope) < 0.4:
-        return SK_BILL, (0, 0, 0, 0, 0, 0), 1.0
-    v, u = np.nonzero(mask)
-    v = np.r_[v, v + 1].astype(float)
-    u = np.r_[u, u + 1].astype(float) - w / 2
-    sg = -1.0 if slope < 0 else 1.0  # modo 1: s = ly = c − u/22 · modo 2: s = lx = c + u/22
-    c = max(1.02, float(((sg * u + v - h + 44) / 44).max()))
-    s = c + sg * u / 22
-    z = (44 * c + sg * u + h - 44 - v) / 4
-    if z.min() < 4:  # encosta no chão: móvel (cadeira...), não item pendurado
-        return SK_BILL, (0, 0, 0, 0, 0, 0), 1.0
-    return SK_FLAT, (float(s.min()), float(z.min()), float(s.max()), float(z.max()), c, 1.0 if sg < 0 else 2.0), 1.0
+def oct_encode(n):
+    n = n / np.abs(n).sum(1, keepdims=True)
+    o = n[:, :2].copy()
+    neg = n[:, 2] < 0
+    o[neg] = (1 - np.abs(n[neg][:, ::-1][:, :2])) * np.where(n[neg][:, :2] >= 0, 1.0, -1.0)
+    return o
+
+
+def bleed(img, iters=3):
+    """Cor dos pixels opacos espalhada nos transparentes vizinhos (alpha continua 0): mipmaps sem halo."""
+    rgb = np.stack([(img >> 10) & 31, (img >> 5) & 31, img & 31], -1).astype(np.float32)
+    valid = img != 0
+    for _ in range(iters):
+        acc = np.zeros_like(rgb)
+        cnt = np.zeros(valid.shape, np.float32)
+        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)):
+            v = np.roll(np.roll(valid, dy, 0), dx, 1)
+            acc += np.roll(np.roll(rgb, dy, 0), dx, 1) * v[..., None]
+            cnt += v
+        grow = ~valid & (cnt > 0)
+        rgb[grow] = acc[grow] / cnt[grow][:, None]
+        valid |= grow
+    c = np.clip(np.round(rgb), 0, 31).astype(np.uint16)
+    out = (c[..., 0] << 11) | (c[..., 1] << 6) | (c[..., 2] << 1)
+    return np.where(img != 0, out | 1, np.where(valid, out, 0)).astype(np.uint16)
 
 
 def build_hues(src, out):
@@ -410,10 +780,6 @@ def build_hues(src, out):
         f.write(struct.pack('<4sHHI', b'HUE1', 32, len(cols), 0))
         f.write(arr.astype('<u2').tobytes())
     return len(cols)
-
-
-GROUP_SLOT = 76          # texels por grupo em groups.bin: 3 de cabeçalho + 2 por peça
-GROUP_MAX = 36
 
 
 def roof_slopes(gx, gy, z, roof):
@@ -458,7 +824,7 @@ def roof_slopes(gx, gy, z, roof):
 
 def ceilings(gx, gy, z, sid, sflags):
     """Distância em z até o piso/telhado mais próximo acima de cada item no mesmo tile (0 = nada
-    acima, máx. 63): o casco é cortado ali para itens não atravessarem o andar de cima."""
+    acima, máx. 63): a malha é cortada ali para itens não atravessarem o andar de cima."""
     f = sflags[sid]
     st = (f & np.uint64(SF_SURFACE | SF_ROOF | SF_BACKGROUND)) != 0
     cell = gx.astype(np.int64) * 8192 + gy
@@ -471,110 +837,31 @@ def ceilings(gx, gy, z, sid, sflags):
     return np.where(hit, np.minimum(k[p] - (cell * 1024 + z + 512), 63), 0)
 
 
-def merge_assemblies(gx, gy, z, sid, hue, tie, partial, ceil, sprites):
-    """Junta peças de casco vizinhas (mesmo tile ou 8 vizinhos, z ±3, ids próximos — peças de um
-    conjunto têm ids consecutivos) num objeto só (fonte, mesa grande, balcão): o casco simétrico
-    passa a valer para o conjunto. Cada conjunto vira uma instância na peça âncora (a mais à frente
-    na tela) que referencia um grupo = lista de peças (sprite, deslocamento) + caixa do conjunto.
-    Devolve as instâncias, grp (−1 = item avulso) e a lista de grupos."""
-    from scipy.sparse import coo_matrix
-    from scipy.sparse.csgraph import connected_components
-    none = np.full(len(sid), -1, np.int64)
-    hull = np.array([sprites.get(s, (None,))[0] == SK_BILL for s in sid.tolist()], bool)
-    idx = np.nonzero(hull)[0]
-    if len(idx) < 2:
-        return gx, gy, z, sid, hue, tie, partial, ceil, none, []
-    x, y, zz, s = gx[idx], gy[idx], z[idx] + 128, sid[idx]
-
-    def key(x, y, zz, b):
-        return ((x * 8192 + y) * 512 + zz) * 4096 + b
-    own = np.r_[key(x, y, zz, s // 64), key(x, y, zz, (s + 32) // 64 + 2048)]
-    who = np.r_[np.arange(len(idx)), np.arange(len(idx))]
-    order = np.argsort(own, kind='stable')
-    own, who = own[order], who[order]
-    same = own[1:] == own[:-1]                                # mesma chave: mesmo conjunto
-    rows, cols = [who[1:][same]], [who[:-1][same]]
-    for dx in (-1, 0, 1):
-        for dy in (-1, 0, 1):
-            for dz in range(-3, 4):
-                if dx == dy == dz == 0:
-                    continue
-                for b in (s // 64, (s + 32) // 64 + 2048):
-                    k = key(x + dx, y + dy, zz + dz, b)
-                    p = np.minimum(np.searchsorted(own, k), len(own) - 1)
-                    m = own[p] == k
-                    rows.append(np.nonzero(m)[0])
-                    cols.append(who[p[m]])
-    r, c = np.concatenate(rows), np.concatenate(cols)
-    n = len(idx)
-    _, comp = connected_components(coo_matrix((np.ones(len(r), np.int8), (r, c)), shape=(n, n)), directed=False)
-
-    order = np.argsort(comp, kind='stable')
-    bounds = np.r_[0, np.nonzero(np.diff(comp[order]))[0] + 1, n]
-    grp = none.copy()
-    drop = np.zeros(len(sid), bool)
-    groups, cache = [], {}
-    merged = 0
-    for a, b in zip(bounds[:-1], bounds[1:]):
-        mem = order[a:b]
-        if len(mem) < 2 or len(mem) > GROUP_MAX:
-            continue
-        mx, my, mz, ms = x[mem], y[mem], zz[mem] - 128, s[mem]
-        if mx.max() - mx.min() > 5 or my.max() - my.min() > 5:
-            continue
-        an = int(np.lexsort((mx, 22 * (mx + my) - 4 * mz))[-1])
-        dx, dy, dz = mx - mx[an], my - my[an], mz - mz[an]
-        ck = tuple(sorted(zip(dx.tolist(), dy.tolist(), dz.tolist(), ms.tolist())))
-        if ck not in cache:
-            # peças da frente para trás: na tela, a da frente cobre as outras
-            parts = sorted(ck, key=lambda p: (p[0] + p[1], p[2], p[0]), reverse=True)
-            lo, hi = np.full(3, 1e9), np.full(3, -1e9)
-            for pdx, pdy, pdz, ps in parts:
-                x0, y0, x1, y1, z0, z1 = sprites[ps][1]
-                lo = np.minimum(lo, [pdx + x0, pdy + y0, pdz + z0])
-                hi = np.maximum(hi, [pdx + x1, pdy + y1, pdz + z1])
-            cache[ck] = len(groups)
-            groups.append((parts, lo.tolist(), hi.tolist()))
-        g = idx[mem]
-        ga = g[an]
-        drop[g] = True
-        drop[ga] = False
-        grp[ga] = cache[ck]
-        cm = ceil[g][ceil[g] > 0]                            # teto do conjunto: o mais baixo das peças
-        ceil[ga] = int((cm + z[g][ceil[g] > 0] - z[ga]).min()) if len(cm) else 0
-        merged += len(mem)
-    print(f'  conjuntos: {int((grp >= 0).sum())} instâncias de {merged} peças, {len(groups)} grupos')
-    keep = ~drop
-    return gx[keep], gy[keep], z[keep], sid[keep], hue[keep], tie[keep], partial[keep], ceil[keep], grp[keep], groups
-
-
-def write_groups(path, groups, art_of):
-    """GRP1: u32 magic, u32 n, u32 linhas | linhas × 1024 × u16[4], GROUP_SLOT texels por grupo:
-    (nPeças, 0, 0, 0) (x0, y0, x1, y1)·64 (z0, z1, 0, 0)·64 e por peça, já pronto para o shader,
-    (ax, ay, tw, th) no atlas e (u0, v0)·2, página: o pixel da peça para o ponto m da âncora é
-    (22(mx − my), 22(mx + my) − 4mz) + (u0, v0). art_of(s) -> (página, ax, ay, tx, ty, tw, th, w, h)."""
-    rows = -(-max(len(groups), 1) * GROUP_SLOT // 1024)
-    t = np.zeros((rows * 1024, 4), np.uint16)
-    q = lambda v: int(round(v * 64)) & 0xFFFF
-    for g, (parts, lo, hi) in enumerate(groups):
-        o = g * GROUP_SLOT
-        t[o] = (len(parts), 0, 0, 0)
-        t[o + 1] = (q(lo[0]), q(lo[1]), q(hi[0]), q(hi[1]))
-        t[o + 2] = (q(lo[2]), q(hi[2]), 0, 0)
-        for k, (dx, dy, dz, s) in enumerate(parts):
-            pg, ax, ay, tx, ty, tw, th, w, h = art_of(s)
-            u0 = -22 * (dx - dy) + w / 2 - tx
-            v0 = -22 * (dx + dy) + 4 * dz + h - 44 - ty
-            t[o + 3 + 2 * k] = (ax, ay, tw, th)
-            t[o + 4 + 2 * k] = (int(round(u0 * 2)) & 0xFFFF, int(round(v0 * 2)) & 0xFFFF, pg, 0)
+def write_meshes(path, meshes):
+    """MSH1: u32 magic, u32 vértices, u32 linhas | linhas × 2048 × i16[4], 2 texels por vértice:
+    (lx·256, ly·256, lz·16, 0) (u·8, v·8, normal octaédrica ·32767). Devolve o 1º vértice de cada malha."""
+    total = sum(len(m[0]) for m in meshes.values())
+    rows = max(1, -(-total // 1024))
+    t = np.zeros((rows * 1024, 2, 4), np.int16)
+    first, o = {}, 0
+    for s, (P, px, n) in meshes.items():
+        k = len(P)
+        t[o:o + k, 0, 0] = np.round(P[:, 0] * 256)
+        t[o:o + k, 0, 1] = np.round(P[:, 1] * 256)
+        t[o:o + k, 0, 2] = np.round(P[:, 2] * 16)
+        t[o:o + k, 1, :2] = np.round(px * 8)
+        t[o:o + k, 1, 2:] = np.round(oct_encode(n) * 32767)
+        first[s] = o
+        o += k
     with open(path, 'wb') as f:
-        f.write(struct.pack('<4sII', b'GRP1', len(groups), rows))
-        f.write(t.astype('<u2').tobytes())
+        f.write(struct.pack('<4sII', b'MSH1', total, rows))
+        f.write(t.astype('<i2').tobytes())
+    return first, total
 
 
 def build_statics(src, n, W, H, out_map):
     print('lendo statics...')
-    sflags, sheight, snodraw = src.static_tiledata()
+    sflags, sheight, snodraw, snames = src.static_tiledata()
     gx, gy, z, sid, hue = src.read_statics(n, W, H)
     total_raw = len(sid)
     keep = (sid < len(sflags)) & ~np.isin(sid, list(NODRAW_STATIC))
@@ -595,24 +882,34 @@ def build_statics(src, n, W, H, out_map):
     tie = np.empty_like(rank)
     tie[order] = np.minimum(rank, 15)
 
-    print('decodificando e classificando sprites...')
-    sprites, imgs = {}, {}
-    kinds_count = [0, 0, 0, 0]
-    low_iou = 0
+    print('decodificando sprites e gerando malhas...')
+    tx = _load_taxonomy()
+    sprites, imgs, meshes = {}, {}, {}
+    engines = {}
     for s in np.unique(sid).tolist():
         img = src.static_art(s)
         if img is None or not img.any():
             continue
-        kind, params, q = classify_sprite(img, int(sflags[s]), int(sheight[s]))
-        low_iou += kind == SK_SLOPE and q < 0.6
-        sprites[s] = (kind, params)
         imgs[s] = img
-        kinds_count[kind] += 1
-    print(f'  {len(sprites)} sprites: box {kinds_count[0]}, flat {kinds_count[1]}, '
-          f'slope {kinds_count[2]} (IoU<0.6: {low_iou}), casco {kinds_count[3]}')
+        if int(sflags[s]) & SF_ROOF:
+            iou, e, c, sx, sy = fit_slope(img != 0)
+            sprites[s] = (SK_SLOPE, (e, c, sx, sy, 0, 0))
+            engines['telhado'] = engines.get('telhado', 0) + 1
+            continue
+        mask = img != 0
+        x0, y0, x1, y1 = _bbox(mask)
+        area = int(mask.sum())
+        cat, sub = categorize(tx, snames[s] if s < len(snames) else '', int(sflags[s]), area,
+                              area / ((x1 - x0) * (y1 - y0)))
+        eng, mesh = sprite_mesh(img, tx, cat, sub)
+        meshes[s] = mesh
+        sprites[s] = (SK_MESH, None)
+        engines[eng] = engines.get(eng, 0) + 1
+    print('  ' + ', '.join(f'{k} {v}' for k, v in sorted(engines.items())))
+    mfirst, mtotal = write_meshes(os.path.join(out_map, 'meshes.bin'), meshes)
+    print(f'  malhas: {mtotal} vértices ({mtotal * 16 / 1e6:.1f} MB)')
     partial = ((sflags[sid] & np.uint64(SF_PARTIAL_HUE)) != 0).astype(np.int64)
     ceil = ceilings(gx, gy, z, sid, sflags)
-    gx, gy, z, sid, hue, tie, partial, ceil, grp, groups = merge_assemblies(gx, gy, z, sid, hue, tie, partial, ceil, sprites)
 
     # atlas: recorta a bbox opaca e empacota em prateleiras
     trims = {}
@@ -635,14 +932,20 @@ def build_statics(src, n, W, H, out_map):
     atlas = np.zeros((pages, ATLAS, ATLAS), np.uint16)
     index = {s: i for i, s in enumerate(sorted(imgs))}
     table = np.zeros((-(-len(index) // 256) * 256, 16), np.uint16)
+    nverts = np.zeros(len(index), np.int64)
     for s, i in index.items():
         p, ax, ay = place[s]
-        tx, ty, tw, th = trims[s]
-        img = imgs[s][ty:ty + th, tx:tx + tw]
-        atlas[p, ay:ay + th, ax:ax + tw] = np.where(img != 0, (img << 1) | 1, 0)
+        tx_, ty, tw, th = trims[s]
+        atlas[p, ay:ay + th, ax:ax + tw] = bleed(imgs[s][ty:ty + th, tx_:tx_ + tw])
         kind, params = sprites[s]
         h, w = imgs[s].shape
-        table[i] = [ax, ay, tw, th, tx, ty, w, h, kind | (p << 8), 0] + [int(round(v * 64)) & 0xFFFF for v in params]
+        if kind == SK_MESH:
+            o = mfirst[s]
+            nverts[i] = len(meshes[s][0])
+            params = [o & 0xFFFF, o >> 16, nverts[i], 0, 0, 0]
+        else:
+            params = [int(round(v * 64)) & 0xFFFF for v in params]
+        table[i] = [ax, ay, tw, th, tx_, ty, w, h, kind | (p << 8), 0] + params
     with open(os.path.join(out_map, 'atlas.bin'), 'wb') as f:
         f.write(struct.pack('<4sHHI', b'ATL1', ATLAS, pages, 0))
         f.write(atlas.astype('<u2').tobytes())
@@ -650,32 +953,31 @@ def build_statics(src, n, W, H, out_map):
         f.write(struct.pack('<4sII', b'SPR1', len(index), len(table)))
         f.write(table.astype('<u2').tobytes())
     print(f'  atlas {pages} página(s) {ATLAS}², tabela {len(index)} sprites')
-    write_groups(os.path.join(out_map, 'groups.bin'), groups,
-                 lambda s: place[s] + trims[s] + imgs[s].shape[::-1])
+    old = os.path.join(out_map, 'groups.bin')
+    if os.path.exists(old):
+        os.remove(old)
 
-    # chunks STA1: instâncias agrupadas por tipo de primitiva
+    # chunks STA2: instâncias agrupadas por lote (0 = telhado, k = malhas de até MESH_CLASSES[k] vértices)
     print('gravando chunks de statics...')
     ok = np.isin(sid, list(index))
-    gx, gy, z, sid, hue, tie, partial, ceil, grp = gx[ok], gy[ok], z[ok], sid[ok], hue[ok], tie[ok], partial[ok], ceil[ok], grp[ok]
-    top = max(int(sid.max()), max(index)) + 1  # peças só usadas em grupos também estão no índice
+    gx, gy, z, sid, hue, tie, partial, ceil = gx[ok], gy[ok], z[ok], sid[ok], hue[ok], tie[ok], partial[ok], ceil[ok]
+    top = int(sid.max()) + 1
     lut = np.zeros(top, np.int64)
     kind_lut = np.zeros(top, np.int64)
     for s, i in index.items():
-        lut[s] = i
-        kind_lut[s] = sprites[s][0]
+        if s < top:
+            lut[s] = i
+            kind_lut[s] = 0 if sprites[s][0] == SK_SLOPE else int(np.searchsorted(MESH_CLASSES, nverts[i]))
     kind = kind_lut[sid]
     hh = hue & 0x3FFF
     hh = np.where(hh > 3000, 0, hh)
-    # bit 25: a instância é um conjunto e o campo sprite de B guarda o índice do grupo
-    isg = (grp >= 0).astype(np.int64)
-    # bits 26–31: teto (z até o andar de cima), só usado pelo casco
+    # bits 26–31: teto (z até o andar de cima), corta a malha
     ceil = np.clip(ceil, 0, 63)
-    A = ((gx & 63) | ((gy & 63) << 6) | ((z + 128) << 12) | (tie << 20) | (partial << 24) | (isg << 25)
-         | (ceil << 26))
+    A = (gx & 63) | ((gy & 63) << 6) | ((z + 128) << 12) | (tie << 20) | (partial << 24) | (ceil << 26)
     # telhados usam os bits 25–31 para a inclinação vinda dos vizinhos: tem:1 gx:3 gy:3 (×1,5 z, +4)
-    has, qx, qy = roof_slopes(gx, gy, z, kind == SK_SLOPE)
-    A = np.where(kind == SK_SLOPE, (A & 0x1FFFFFF) | (has << 25) | (qx << 26) | (qy << 29), A).astype('<u4')
-    B = (np.where(isg == 1, grp, lut[sid]) | (hh << 16)).astype('<u4')
+    has, qx, qy = roof_slopes(gx, gy, z, kind == 0)
+    A = np.where(kind == 0, (A & 0x1FFFFFF) | (has << 25) | (qx << 26) | (qy << 29), A).astype('<u4')
+    B = (lut[sid] | (hh << 16)).astype('<u4')
     cw, ch = -(-W // CHUNK), -(-H // CHUNK)
     cid = (gy // CHUNK) * cw + gx // CHUNK
     order = np.lexsort((kind, cid))
@@ -683,11 +985,13 @@ def build_statics(src, n, W, H, out_map):
     bounds = np.r_[0, np.nonzero(np.diff(cid))[0] + 1, len(cid)]
     exists = np.zeros(cw * ch, np.uint8)
     os.makedirs(os.path.join(out_map, 'statics'), exist_ok=True)
+    nk = len(MESH_CLASSES)
     total = 0
     for a, b in zip(bounds[:-1], bounds[1:]):
         c = int(cid[a])
-        cnt = np.bincount(kind[a:b], minlength=4).tolist()
-        data = struct.pack('<4sHHIIIII', b'STA1', c % cw, c // cw, int(b - a), *cnt) + A[a:b].tobytes() + B[a:b].tobytes()
+        cnt = np.bincount(kind[a:b], minlength=nk).tolist()
+        data = (struct.pack(f'<4sHHII{nk}I', b'STA2', c % cw, c // cw, int(b - a), nk, *cnt)
+                + A[a:b].tobytes() + B[a:b].tobytes())
         with open(os.path.join(out_map, 'statics', f'{c % cw}_{c // cw}.bin'), 'wb') as f:
             f.write(data)
         exists[c] = 1
@@ -695,7 +999,7 @@ def build_statics(src, n, W, H, out_map):
     print(f'  {len(bounds) - 1} chunks, {len(A)} instâncias, {total / 1e6:.1f} MB')
     return {
         'staticsChunks': base64.b64encode(np.packbits(exists, bitorder='little').tobytes()).decode(),
-        'sprites': len(index), 'atlasPages': pages, 'groups': len(groups),
+        'sprites': len(index), 'atlasPages': pages, 'meshVerts': int(mtotal), 'meshClasses': list(MESH_CLASSES),
     }
 
 
@@ -901,7 +1205,7 @@ class EnhancedSource:
                 if d[p] == TA_PROP_HEIGHT:
                     height[s] = min(struct.unpack_from('<I', d, p + 1)[0], 255)
                 p += 5
-        return flags, height, nodraw
+        return flags, height, nodraw, [''] * len(flags)
 
     def static_art(self, s):
         """DDS da art clássica (com sobra até potência de 2) recortado ao tamanho do tileart -> u16 555."""

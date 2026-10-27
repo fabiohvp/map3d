@@ -1,0 +1,580 @@
+{
+ "version": 1,
+ "min_confidence": 0.6,
+ "name_rules": [
+  [
+   "effect",
+   "marker",
+   "\\bqc\\b|marker|cursor|nodraw|no draw|\\bhelper\\b|\\bnoname\\b|\\bregion"
+  ],
+  [
+   "terrain",
+   "ground",
+   "\\bterrain\\b|\\bunused\\b"
+  ],
+  [
+   "decoration",
+   "web",
+   "\\bwebs?\\b|cobweb|spider ?web"
+  ],
+  [
+   "decoration",
+   "painting",
+   "\\bflag|banner|pennant|\\bstandard\\b"
+  ],
+  [
+   "document",
+   "book",
+   "\\bscroll\\b|spellbook"
+  ],
+  [
+   "ship",
+   "hull",
+   "hull|mainhull|shipwreck|ship\\s*(bow|stern)|propsdeck|tiller|shipswheel|gunwale"
+  ],
+  [
+   "ship",
+   "sails",
+   "sails?\\b|\\bmast\\b|mainmast|rigging"
+  ],
+  [
+   "effect",
+   "field",
+   "\\bfield\\b|energy vortex|wall of (fire|stone|energy)|poison field|paralysis|firefield"
+  ],
+  [
+   "effect",
+   "fire",
+   "^fire|fireball|explosion|flamestrike|firework|sparkle|vortex|glow|\\bsmoke|^blood|splash|summon|spell|rune of|\\bhit\\b"
+  ],
+  [
+   "terrain",
+   "water",
+   "^water\\b|waterfall|\\bpond\\b|lagoon|\\bcanal\\b|\\bpool\\b|^wave"
+  ],
+  [
+   "terrain",
+   "lava",
+   "^lava"
+  ],
+  [
+   "architecture",
+   "roof",
+   "roof|shingle|thatch(?!ed hut)"
+  ],
+  [
+   "architecture",
+   "stairs",
+   "stairs?|staircase|\\bsteps\\b"
+  ],
+  [
+   "architecture",
+   "door",
+   "\\bdoor|\\bgate\\b|trapdoor|portcullis"
+  ],
+  [
+   "architecture",
+   "window",
+   "window|windo\\b|shutter|\\bpane\\b"
+  ],
+  [
+   "architecture",
+   "arch",
+   "\\barch\\b|archway|doorway"
+  ],
+  [
+   "architecture",
+   "column",
+   "column|pillar|\\bpost\\b|obelisk|pedestal|spire"
+  ],
+  [
+   "architecture",
+   "bridge",
+   "bridge|\\bplank\\b|walkway"
+  ],
+  [
+   "architecture",
+   "fence",
+   "fence|palisade|railing|\\brail\\b|barricade|gateway"
+  ],
+  [
+   "architecture",
+   "floor",
+   "floor|\\btile\\b|flagstone|cobble|pavement|mosaic|\\bpaving"
+  ],
+  [
+   "architecture",
+   "wall",
+   "\\bwall|brick|plaster|boardbatten|breakstone|breakbrick|ruin|corner[nsew]?\\b|stone\\b.*slab|tower|battlement"
+  ],
+  [
+   "architecture",
+   "sign",
+   "\\bsign\\b|signpost|hanging sign|shop sign"
+  ],
+  [
+   "vegetation",
+   "tree",
+   "\\btree|\\bpalm\\b|\\byew\\b|cedar|\\boak\\b|\\bpine\\b|willow|\\bree\\b|cypress|\\bstump"
+  ],
+  [
+   "vegetation",
+   "bush",
+   "bush|shrub|hedge|fern|\\bfrond|leaves|\\bvines?\\b|\\bivy|cactus|bamboo|reeds?\\b|thicket"
+  ],
+  [
+   "vegetation",
+   "flower",
+   "flower|\\brose|lily|tulip|poppy|daisy|\\bherb|orchid"
+  ],
+  [
+   "vegetation",
+   "crop",
+   "wheat|\\bcorn\\b|cotton|\\bflax|pumpkin|cabbage|carrot|onion|lettuce|turnip|squash|melon|\\bcrop|\\bhay\\b|garlic|\\bfurrow"
+  ],
+  [
+   "vegetation",
+   "mushroom",
+   "mushroom|toadstool|fungus"
+  ],
+  [
+   "rock",
+   "boulder",
+   "boulder|\\brocks?\\b|stalagmite|stalactite|\\bstones?\\b$|pebble|\\bore\\b|outcrop|rubble|cliff"
+  ],
+  [
+   "rock",
+   "crystal",
+   "crystal|\\bgems?\\b|geode"
+  ],
+  [
+   "terrain",
+   "ground",
+   "grass|\\bdirt\\b|\\bsand\\b|\\bsnow|\\bmud\\b|swamp|cave floor|furrows|\\bgravel|wasteland|\\bice\\b|jungle floor|forest floor"
+  ],
+  [
+   "container",
+   "chest",
+   "\\bchest\\b|strongbox|coffer|trunk|sarcophagus|coffin|casket"
+  ],
+  [
+   "container",
+   "barrel",
+   "barrel|\\bkeg\\b|cask|\\btub\\b|\\bvat\\b|bucket|cauldron|\\bpail\\b"
+  ],
+  [
+   "container",
+   "crate",
+   "crate|\\bbox\\b|storage|\\bcase\\b"
+  ],
+  [
+   "container",
+   "bag",
+   "\\bbag\\b|backpack|pouch|\\bsack\\b|basket|satchel|\\bpack\\b|purse"
+  ],
+  [
+   "furniture",
+   "table",
+   "table|desk|\\bcounter\\b|workbench|\\baltar\\b|\\bstand\\b|\\brack\\b|\\bdisplay\\b|lectern"
+  ],
+  [
+   "furniture",
+   "chair",
+   "chair|stool|\\bthrone\\b|\\bpew\\b|\\bbench\\b|\\bsofa|\\bcouch|\\bseat\\b"
+  ],
+  [
+   "furniture",
+   "bed",
+   "\\bbed\\b|hammock|\\bcot\\b|\\bpillow|\\bblanket|bedroll"
+  ],
+  [
+   "furniture",
+   "cabinet",
+   "cabinet|armoire|wardrobe|dresser|bookcase|bookshelf|\\bshelf|\\bshelves|drawer|hutch|cupboard|\\bcase\\b"
+  ],
+  [
+   "light",
+   "torch",
+   "torch|candle|lamp|lantern|brazier|fireplace|chandelier|sconce|candelabra|\\bforge\\b|\\boven\\b|campfire|bonfire"
+  ],
+  [
+   "furniture",
+   "table",
+   "bulletin board|noticeboard|\\bnotice board"
+  ],
+  [
+   "armor",
+   "body",
+   "gargoyle_(stone|leather|plate|bone|clothing)|suneate|haidate|\\bkote\\b|\\bsleeves|mempo|\\bdo\\b|hakama|\\bbone (arms|legs|armor)|\\bstuddedd|\\bjingasa"
+  ],
+  [
+   "weapon",
+   "sword",
+   "sword|\\bblade|katana|scimitar|cutlass|longsword|broadsword|\\bkryss|\\bsaber|\\bsabre|rapier|claymore"
+  ],
+  [
+   "weapon",
+   "axe",
+   "\\baxe\\b|\\bhatchet|halberd|\\bscythe|cleaver|pickaxe"
+  ],
+  [
+   "weapon",
+   "mace",
+   "\\bmace\\b|hammer|club\\b|flail|\\bmaul|war ?fork|morning star|scepter"
+  ],
+  [
+   "weapon",
+   "polearm",
+   "spear|\\bpike|lance|trident|bardiche|javelin|\\bpolearm"
+  ],
+  [
+   "weapon",
+   "bow",
+   "\\bbow\\b|crossbow|\\barrow|\\bbolt\\b|\\bquiver"
+  ],
+  [
+   "weapon",
+   "staff",
+   "\\bstaff|\\bwand\\b|\\bcane\\b|quarterstaff|\\brod\\b|\\bgnarled"
+  ],
+  [
+   "weapon",
+   "dagger",
+   "dagger|knife|\\bdirk|\\bkukri|\\bcleaver|\\bshiv|skinning"
+  ],
+  [
+   "weapon",
+   "siege",
+   "ballista|catapult|catupult|cannon|trebuchet|siege"
+  ],
+  [
+   "armor",
+   "shield",
+   "\\bshield|buckler|kite shield|\\baegis"
+  ],
+  [
+   "armor",
+   "helm",
+   "\\bhelm|helmet|\\bcoif|\\bcap\\b|circlet|\\bhood\\b|\\bmask\\b"
+  ],
+  [
+   "armor",
+   "body",
+   "armor|armour|platemail|chainmail|ringmail|\\bmail\\b|breastplate|\\btunic|gorget|\\bgloves|gauntlet|\\bleggings|\\bgreaves|\\bbarding"
+  ],
+  [
+   "clothing",
+   "robe",
+   "robe|\\bshirt|\\bdress|\\bkilt|\\bskirt|\\bcloak|\\bpants|\\bhat\\b|\\bboots?\\b|\\bshoes?\\b|\\bsandals|\\bsash|\\bapron|\\bcloth(es|ing)|\\bgown|\\bsurcoat|bandana"
+  ],
+  [
+   "jewelry",
+   "ring",
+   "\\bring\\b|bracelet|necklace|earring|amulet|\\bpendant|talisman|\\bamulets?\\b"
+  ],
+  [
+   "tool",
+   "tool",
+   "hammer|chisel|saw\\b|tongs|anvil|\\bscissors|\\bpick\\b|shovel|\\btool|sewing|\\bkit\\b|fishing|\\bpole\\b|\\bflask|mortar|tinker|\\bvice\\b|spokeshave|drawknife|\\bplane\\b|\\bdough|\\bchisels|scales|loom|spinning wheel|forge|bellows|wheel|\\bpulley|grinder|whetstone"
+  ],
+  [
+   "consumable",
+   "potion",
+   "potion|\\bbottle|\\bflask|\\bvial|elixir|\\bjar\\b|\\bpitcher|\\bgoblet|\\bmug\\b|\\bwine|\\bale\\b|\\bcup\\b|\\bbeer"
+  ],
+  [
+   "consumable",
+   "food",
+   "\\bfood|\\bbread|\\bloaf|\\bcheese|\\bmeat|\\bham\\b|\\bfish\\b|\\bapple|\\bpear\\b|\\bgrapes|\\bpie\\b|\\bcake|\\bmuffin|\\begg|\\bsausage|\\bplatter|\\bcooked|\\bcookie|\\bpeach|\\bbanana|\\blemon|\\blime|\\bhoney|cornucopia|\\bsoup|\\bstew"
+  ],
+  [
+   "consumable",
+   "reagent",
+   "reagent|\\bpearl|\\bmoss|\\bash\\b|\\bshade|\\bginseng|\\bmandrake|\\bnightshade|\\bgarlic|\\bsulfurous|\\bspider.?s silk|\\bbatwing|\\bbloodmoss|\\bgrave dust|\\bdaemon bone|\\bpig iron|\\bvolcanic ash|\\bnox crystal|\\bfertile dirt|\\bblack pearl"
+  ],
+  [
+   "resource",
+   "ingot",
+   "ingot|\\blog\\b|\\blogs\\b|\\bboards?\\b|\\bplanks?\\b|\\bhide\\b|\\bleather|\\bwool|\\bfeather|\\bbolt of cloth|\\byarn|\\bthread|\\bbone\\b|\\bbones\\b|\\bscales\\b|\\bcotton|\\bbale\\b|\\bsand\\b|\\bgranite|\\bclay\\b|\\bresource"
+  ],
+  [
+   "document",
+   "book",
+   "\\bbook|\\bscroll|\\bmap\\b|\\bpaper|\\bletter|\\bnote\\b|\\bparchment|\\bdocument|\\btome\\b|\\bjournal|\\bdiary|\\bspellbook|\\bquill|\\bdrawings|\\bblueprint"
+  ],
+  [
+   "decoration",
+   "statue",
+   "statue|sculpture|gargoyle|\\bbust\\b|\\bidol|\\bgargish|\\bcarving|\\bgolem|\\btrophy|\\bskull|\\bhead\\b|\\bmask\\b"
+  ],
+  [
+   "decoration",
+   "painting",
+   "painting|tapestry|\\bart\\b|\\bpicture|\\bportrait|\\bmural|\\bbanner|\\bflag\\b|\\bcurtain|\\bdrape|\\bwreath|\\bheraldry|\\bherald|\\bshield on|plaque|\\bpoint"
+  ],
+  [
+   "decoration",
+   "rug",
+   "\\brug|carpet|\\bmat\\b|\\brunner\\b|\\bhide rug|bearskin|tigerskin"
+  ],
+  [
+   "decoration",
+   "vase",
+   "\\bvase|\\bpot\\b|\\bpots\\b|\\burn\\b|\\bjug\\b|\\bpottery|ceramic|\\bbowl|\\bplanter|\\bfountain|\\bwell\\b|\\bbirdbath|\\bflowerpot"
+  ],
+  [
+   "decoration",
+   "misc",
+   "fireplace|\\bcart\\b|\\bwagon|\\bwheelbarrow|\\bmailbox|\\btent\\b|\\bhut\\b|\\bcage\\b|\\btrap\\b|\\btelescope|\\bglobe\\b|\\blighthouse|\\bladder|\\bchain|\\bwebs?\\b|\\bcobweb|\\bgravestone|\\bgrave\\b|\\btombstone|\\bskeleton|\\bcorpse|\\bbody\\b|\\bremains|\\begg|\\bdecor|\\bholiday|\\bchristmas|\\bxmas|\\beaster|\\bhalloween|\\bwedding|\\banniversary|\\bmoongate|\\bteleporter|\\bswitch|\\blever|\\bmachine|\\bpulley|\\bcrane|\\bmoon\\b|\\bworld\\b"
+  ]
+ ],
+ "flag_rules": [
+  [
+   "architecture",
+   "roof",
+   [
+    "Roof"
+   ],
+   0.85
+  ],
+  [
+   "architecture",
+   "door",
+   [
+    "Door"
+   ],
+   0.85
+  ],
+  [
+   "architecture",
+   "window",
+   [
+    "Window"
+   ],
+   0.8
+  ],
+  [
+   "architecture",
+   "stairs",
+   [
+    "StairBack"
+   ],
+   0.8
+  ],
+  [
+   "architecture",
+   "stairs",
+   [
+    "StairRight"
+   ],
+   0.55
+  ],
+  [
+   "architecture",
+   "wall",
+   [
+    "Wall",
+    "Impassable"
+   ],
+   0.7
+  ],
+  [
+   "architecture",
+   "wall",
+   [
+    "Wall"
+   ],
+   0.62
+  ],
+  [
+   "vegetation",
+   "tree",
+   [
+    "Foliage"
+   ],
+   0.7
+  ],
+  [
+   "container",
+   "chest",
+   [
+    "Container"
+   ],
+   0.7
+  ],
+  [
+   "light",
+   "torch",
+   [
+    "LightSource"
+   ],
+   0.7
+  ],
+  [
+   "architecture",
+   "bridge",
+   [
+    "Bridge",
+    "Surface"
+   ],
+   0.6
+  ],
+  [
+   "architecture",
+   "floor",
+   [
+    "Background",
+    "Surface"
+   ],
+   0.65
+  ],
+  [
+   "furniture",
+   "table",
+   [
+    "Surface",
+    "Impassable"
+   ],
+   0.62
+  ],
+  [
+   "effect",
+   "fire",
+   [
+    "Animation",
+    "Damaging"
+   ],
+   0.62
+  ],
+  [
+   "effect",
+   "fire",
+   [
+    "Translucent",
+    "Animation"
+   ],
+   0.6
+  ],
+  [
+   "clothing",
+   "robe",
+   [
+    "Wearable"
+   ],
+   0.6
+  ]
+ ],
+ "default_depth_ratio": {
+  "architecture/wall": 0.18,
+  "architecture/window": 0.18,
+  "architecture/door": 0.15,
+  "architecture/fence": 0.18,
+  "architecture/sign": 0.12,
+  "architecture/column": 0.9,
+  "architecture/arch": 0.3,
+  "architecture/roof": 0.9,
+  "architecture/stairs": 0.9,
+  "architecture/floor": 1.0,
+  "architecture/bridge": 0.9,
+  "furniture/table": 0.9,
+  "furniture/chair": 0.7,
+  "furniture/bed": 0.6,
+  "furniture/cabinet": 0.5,
+  "container/chest": 0.7,
+  "container/barrel": 1.0,
+  "container/crate": 0.9,
+  "container/bag": 0.6,
+  "weapon/sword": 0.07,
+  "weapon/axe": 0.1,
+  "weapon/mace": 0.12,
+  "weapon/polearm": 0.07,
+  "weapon/bow": 0.07,
+  "weapon/staff": 0.1,
+  "weapon/dagger": 0.07,
+  "weapon/siege": 0.6,
+  "armor/shield": 0.14,
+  "armor/helm": 0.9,
+  "armor/body": 0.5,
+  "clothing/robe": 0.4,
+  "jewelry/ring": 0.9,
+  "tool/tool": 0.25,
+  "consumable/potion": 1.0,
+  "consumable/food": 0.9,
+  "consumable/reagent": 0.8,
+  "resource/ingot": 0.7,
+  "document/book": 0.6,
+  "light/torch": 0.8,
+  "vegetation/tree": 1.0,
+  "vegetation/bush": 0.9,
+  "vegetation/flower": 0.4,
+  "vegetation/crop": 0.7,
+  "vegetation/mushroom": 0.9,
+  "rock/boulder": 0.9,
+  "rock/crystal": 0.7,
+  "decoration/statue": 0.7,
+  "decoration/painting": 0.06,
+  "decoration/rug": 0.05,
+  "decoration/vase": 1.0,
+  "decoration/misc": 0.6,
+  "ship/hull": 0.5,
+  "ship/sails": 0.05,
+  "effect/fire": 0.1,
+  "effect/field": 0.1,
+  "effect/marker": 0.05,
+  "decoration/web": 0.05,
+  "effect/decal": 0.05
+ },
+ "category_default_depth_ratio": {
+  "architecture": 0.5,
+  "furniture": 0.7,
+  "container": 0.8,
+  "weapon": 0.1,
+  "armor": 0.4,
+  "clothing": 0.4,
+  "jewelry": 0.9,
+  "tool": 0.25,
+  "consumable": 0.9,
+  "resource": 0.7,
+  "document": 0.5,
+  "light": 0.8,
+  "vegetation": 0.9,
+  "rock": 0.9,
+  "decoration": 0.5,
+  "ship": 0.4,
+  "effect": 0.1,
+  "unknown": 0.5
+ },
+ "archetype_by_subcategory": {
+  "terrain/*": "terrain_tile",
+  "architecture/floor": "box_iso",
+  "architecture/wall": "box_iso",
+  "architecture/window": "box_iso",
+  "architecture/door": "box_iso",
+  "architecture/fence": "box_iso",
+  "architecture/stairs": "box_iso",
+  "architecture/column": "box_iso",
+  "architecture/bridge": "box_iso",
+  "architecture/arch": "visual_hull",
+  "architecture/roof": "visual_hull",
+  "architecture/sign": "visual_hull",
+  "furniture/*": "box_iso",
+  "container/chest": "box_iso",
+  "container/crate": "box_iso",
+  "container/*": "visual_hull",
+  "weapon/*": "visual_hull",
+  "armor/*": "visual_hull",
+  "effect/*": "billboard",
+  "*": "visual_hull"
+ },
+ "sparse_rule": {
+  "categories": [
+   "architecture",
+   "furniture",
+   "container",
+   "decoration",
+   "rock"
+  ],
+  "max_area": 140,
+  "max_fill": 0.28
+ }
+}

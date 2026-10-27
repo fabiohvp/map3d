@@ -17,6 +17,7 @@
     "generate:map:5": "python tools/convert.py --map 5 --source classic",
     "generate:map:classic": "python tools/convert.py --source classic",
     "generate:map:enhanced": "python tools/convert.py --source enhanced",
+    "generate:statics": "python tools/convert.py --source classic --only statics",
     "generate:assets:catalog": "python tools/catalog.py",
     "generate:assets:flora": "python tools/catalog_flora.py",
     "generate:assets": "npm run generate:assets:catalog && npm run generate:assets:flora",
