@@ -364,6 +364,15 @@ def categorize(tx, name, flags, area, fill):
     return cat, sub
 
 
+def floor_iou(mask):
+    """IoU entre a silhueta e o losango de um tile de chão (44 × 44 na base da art)."""
+    h, w = mask.shape
+    vv, uu = np.mgrid[0:h, 0:w] + 0.5
+    tile = np.abs(uu - w / 2) / HT + np.abs(vv - (h - HT)) / HT <= 1
+    union = (tile | mask).sum()
+    return float((tile & mask).sum()) / float(union) if union else 0.0
+
+
 def archetype(tx, cat, sub):
     if cat == 'terrain':
         return 'box'
@@ -904,6 +913,8 @@ def build_statics(src, n, W, H, out_map):
         area = int(mask.sum())
         cat, sub = categorize(tx, snames[s] if s < len(snames) else '', int(sflags[s]), area,
                               area / ((x1 - x0) * (y1 - y0)))
+        if cat == 'unknown' and sheight[s] <= 1 and floor_iou(mask) >= 0.85:
+            cat, sub = 'architecture', 'floor'  # losango de chão sem nome conhecido (placas das virtudes)
         eng, mesh = sprite_mesh(img, tx, cat, sub)
         meshes[s] = mesh
         sprites[s] = (SK_MESH, None)
