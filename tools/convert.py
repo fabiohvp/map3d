@@ -1239,7 +1239,7 @@ def plant_mesh(mask, height=0, tree=False):
     return tuple(np.concatenate([a[k], b[k]]) for k in range(3))
 
 
-def rail_mesh(mask, snap=None, plane=False):
+def rail_mesh(mask, snap=None, plane=False, max_err=1.5, foot=None):
     """Corrimão / grade fina: na art, retas de inclinação ±1 são trilhos nos eixos do mapa, então cada
     trecho fica num plano vertical: descendo para a direita (\\) é o eixo x (ly = c), subindo (/) é o y
     (lx = c'). Formas: \\, /, Λ (ápice em cima) e V (ápice embaixo), escolhidas pelo contorno de cima de cada
@@ -1267,7 +1267,7 @@ def rail_mesh(mask, snap=None, plane=False):
             if best is None or err < best[0]:
                 best = (err, kind, a, sg)
     err, kind, a, sg = best
-    if err > 1.5:
+    if err > max_err:
         return None
     ua = float(cols[a]) + 0.5
     # trecho \\ (sg > 0): plano ly = c; trecho / : plano lx = c + (ua − w/2)/22 (cruzam no ápice).
@@ -1281,7 +1281,7 @@ def rail_mesh(mask, snap=None, plane=False):
         ly = np.where(xside, c, cy_ - du)
         return np.stack([lx, ly, (HT * (lx + ly) + h - 44 - sy) / PZ], 1)
 
-    vs, us = np.nonzero(mask)
+    vs, us = np.nonzero(mask if foot is None else foot)   # foot: peça inteira (o pino), quando mask é só um trecho
     cg = -float(place(us + 0.5, vs + 1.0, 0.0)[:, 2].min()) * PZ / (2 * HT)
     # Na art, peça no meio do tile e baixa ou na borda e 11 z mais alta por tile dão o mesmo pixel.
     # Trilhos de vitrine e cercas ficam apoiados pelo pé do pino (cg: coincide com a borda das peças
@@ -1298,6 +1298,23 @@ def rail_mesh(mask, snap=None, plane=False):
     if plane:                                # só o plano: (forma, coordenada fixa lx (/) ou ly (\))
         return kind, (c + k if kind == '/' else c), ua
     return _plane_mesh(mask, lambda sx, sy: place(sx, sy, c))
+
+
+def rail_parts(mask, min_px=8):
+    """Moldura de vitrine (barras + pino): cada barra reta vira um plano de trilho e o pino dá o pé (altura)."""
+    tris = [], [], []
+    for ys, xs in _blobs(mask):
+        if len(ys) < min_px or np.ptp(xs) < 5:
+            continue                                    # pino
+        part = np.zeros_like(mask)
+        part[ys, xs] = True
+        m = rail_mesh(part, max_err=3.0, foot=mask)
+        if m is not None:
+            for k in range(3):
+                tris[k].append(m[k])
+    if not tris[0]:
+        return None
+    return tuple(np.concatenate(t) for t in tris)
 
 
 def sprite_mesh(img, tx, cat, sub, name='', height=0, surface=False):
@@ -1337,8 +1354,11 @@ def sprite_mesh(img, tx, cat, sub, name='', height=0, surface=False):
         mesh = pew_mesh(mask)                    # banco de encosto
         if mesh is not None:
             return 'banco', mesh
-    if re.search(r'display case|\brail|railing|\bfence', name, re.I) and height <= 3 and not surface:
-        mesh = rail_mesh(mask)
+    if 'display case' in name.lower() and cat == 'container' and surface is not None and mask.shape[1] <= 46:
+        hh = max(1.0, (mask.shape[0] - 44 - _bbox(mask)[1]) / 4.0)    # topo do losango = (0,0,H)
+        return 'caixa', box_mesh(mask, [(0.0, 0.0, 1.0, 1.0, hh)])
+    if re.search(r'display case|\brail|railing|\bfence', name, re.I) and height <= (6 if 'display case' in name.lower() else 3) and not surface:
+        mesh = rail_mesh(mask) or (rail_parts(mask) if 'display case' in name.lower() else None)
         if mesh is not None:
             return 'grade', mesh
     if cat == 'furniture' and ((sub == 'table' and surface and height >= 2) or re.search(r'\bbench\b', name, re.I)):
