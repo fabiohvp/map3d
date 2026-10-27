@@ -1386,6 +1386,10 @@ def sprite_mesh(img, tx, cat, sub, name='', height=0, surface=False):
             return 'caixa', box_mesh(mask, boxes)
         hh = max(1.0, (mask.shape[0] - 44 - _bbox(mask)[1]) / 4.0)    # topo do losango = (0,0,H)
         return 'caixa', box_mesh(mask, [(0.0, 0.0, 1.0, 1.0, hh)])
+    if 'hanging pole' in name.lower() and mask.sum() < 150:
+        mesh = rail_mesh(mask, snap=True)        # vara reta presa à parede: plano na borda do tile
+        if mesh is not None:
+            return 'grade', mesh
     if re.search(r'display case|\brail|railing|\bfence', name, re.I) and height <= (6 if 'display case' in name.lower() else 3) and not surface:
         mesh = (rail_parts(mask) if 'display case' in name.lower() else None) or rail_mesh(mask)
         if mesh is not None:
