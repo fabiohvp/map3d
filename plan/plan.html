@@ -1,0 +1,413 @@
+<title>Britannia 3D Web</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: spec técnica — índice fixo à esquerda no desktop, coluna única de leitura (~72ch) */
+:root {
+  --bg: #f6f7f5;
+  --surface: #ffffff;
+  --fg: #1b2420;
+  --muted: #5a6762;
+  --line: #d9dfdb;
+  --accent: #1d6b57;
+  --accent-soft: #e2efe9;
+  --warn: #8a5a00;
+  --warn-soft: #fbf1dc;
+  --code-bg: #eef2ef;
+  --font-display: "Spectral", Georgia, "Times New Roman", serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #121715; --surface: #18201d; --fg: #e3e9e6; --muted: #9aa8a2; --line: #2b3632;
+    --accent: #6cc4a8; --accent-soft: #1d2f29; --warn: #e8b75c; --warn-soft: #2e2617; --code-bg: #1d2623;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #121715; --surface: #18201d; --fg: #e3e9e6; --muted: #9aa8a2; --line: #2b3632;
+  --accent: #6cc4a8; --accent-soft: #1d2f29; --warn: #e8b75c; --warn-soft: #2e2617; --code-bg: #1d2623;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body {
+  background: var(--bg); color: var(--fg);
+  font-family: var(--font-body); font-size: 15.5px; line-height: 1.62;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 32px 64px;
+}
+.wrap { max-width: 1180px; margin: 0 auto; display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 48px; }
+nav.toc { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 24px); align-self: start; font-size: 13.5px; }
+nav.toc p { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; }
+nav.toc ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+nav.toc a { color: var(--muted); text-decoration: none; display: block; padding: 2px 0 2px 10px; border-left: 2px solid var(--line); }
+nav.toc a:hover, nav.toc a:focus-visible { color: var(--accent); border-left-color: var(--accent); }
+main { min-width: 0; max-width: 78ch; }
+header.top { display: grid; gap: 10px; padding-bottom: 24px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+.eyebrow { font-size: 11.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--accent); font-weight: 600; margin: 0; }
+h1 { font-family: var(--font-display); font-weight: 700; font-size: clamp(30px, 5vw, 42px); line-height: 1.12; margin: 0; text-wrap: balance; }
+.lede { color: var(--muted); font-size: 17px; margin: 0; }
+.meta { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; color: var(--muted); font-family: var(--font-mono); }
+h2 { font-family: var(--font-display); font-weight: 600; font-size: 26px; line-height: 1.2; margin: 48px 0 12px; text-wrap: balance; scroll-margin-top: 20px; }
+h2 .n { color: var(--accent); font-variant-numeric: tabular-nums; margin-right: 8px; }
+h3 { font-size: 16.5px; font-weight: 600; margin: 28px 0 8px; scroll-margin-top: 20px; }
+p, li { margin: 0 0 10px; }
+ul, ol { padding-left: 22px; margin: 0 0 14px; }
+a { color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+code { font-family: var(--font-mono); font-size: .86em; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+pre { font-family: var(--font-mono); font-size: 13px; line-height: 1.55; background: var(--code-bg); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px; overflow-x: auto; margin: 0 0 16px; }
+pre code { background: none; padding: 0; font-size: inherit; }
+.tbl { overflow-x: auto; margin: 0 0 18px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th, td { text-align: left; vertical-align: top; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+th { font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; background: var(--code-bg); }
+tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td code { white-space: nowrap; }
+.note { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 12px 16px; border-radius: 0 6px 6px 0; margin: 0 0 16px; }
+.note.warn { border-left-color: var(--warn); background: var(--warn-soft); }
+.note p:last-child, .note ul:last-child { margin-bottom: 0; }
+.note strong:first-child { color: var(--accent); }
+.note.warn strong:first-child { color: var(--warn); }
+.pill { display: inline-block; font-size: 11px; font-weight: 600; letter-spacing: .04em; padding: 1px 8px; border-radius: 99px; background: var(--warn-soft); color: var(--warn); border: 1px solid var(--warn); vertical-align: 1px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 0 0 18px; }
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; display: grid; gap: 2px; }
+.stat b { font-family: var(--font-mono); font-size: 19px; font-variant-numeric: tabular-nums; }
+.stat span { font-size: 12.5px; color: var(--muted); line-height: 1.4; }
+.phase { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.phase:last-child { border-bottom: 0; }
+.phase .k { font-family: var(--font-mono); color: var(--accent); font-weight: 600; font-size: 14px; padding-top: 2px; }
+.phase h4 { margin: 0 0 4px; font-size: 15px; }
+.phase p { margin: 0; color: var(--muted); font-size: 14px; }
+footer { margin-top: 56px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+@media (max-width: 900px) {
+  .wrap { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  nav.toc { position: static; margin-bottom: 20px; }
+  nav.toc ol { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+}
+</style>
+
+<div class="wrap">
+<nav class="toc" aria-label="Índice">
+  <p>Seções</p>
+  <ol>
+    <li><a href="#escopo">0 · Escopo e entregáveis</a></li>
+    <li><a href="#fontes">1 · Arquivos-fonte</a></li>
+    <li><a href="#medidas">2 · Medidas (asserts)</a></li>
+    <li><a href="#render">3 · Modelo de renderização</a></li>
+    <li><a href="#formatos">4 · Formatos de saída</a></li>
+    <li><a href="#pipeline">5 · Pipeline de conversão</a></li>
+    <li><a href="#runtime">6 · Runtime no navegador</a></li>
+    <li><a href="#fases">7 · Fases e aceite</a></li>
+    <li><a href="#validar">8 · Pontos a validar</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="top">
+  <p class="eyebrow">Spec de implementação · Ultima Online Classic · map0 (Felucca)</p>
+  <h1>Britannia 3D Web: converter map0 e statics para renderização no navegador</h1>
+  <p class="lede">Plano para outro agente implementar: formatos-fonte verificados byte a byte, novas estruturas binárias prontas para GPU, passos de conversão e critérios de aceite.</p>
+  <div class="meta"><span>Cliente: pasta “Ultima Online Classic - UOFiddler”</span><span>Endianness: little-endian em tudo</span><span>Medido em 2026-10-22</span></div>
+</header>
+
+<h2 id="escopo"><span class="n">0</span>Escopo e entregáveis</h2>
+<p>Objetivo: renderizar o mapa 0 do Ultima Online (terreno + itens estáticos) em 3D no navegador, com streaming por chunks e o menor custo possível de CPU, rede e VRAM. A conversão é offline; o navegador só faz upload direto de buffers para a GPU, sem parsing.</p>
+<ul>
+  <li><strong>Conversor</strong> (CLI offline). Recomendado: .NET 8 console, referenciando o <code>Ultima.dll</code> do projeto UOFiddler (já lê UOP, tiledata HS, art, texmaps, hues). Alternativa aceitável: Python + numpy. Uso: <code>uo3d-convert --client "&lt;pasta do cliente&gt;" --map 0 --out out/</code>. Paralelizar por chunk.</li>
+  <li><strong>Viewer web</strong>: TypeScript + Vite + WebGL2 cru (ou three.js com <code>RawShaderMaterial</code>). WebGL2 é necessário por causa de atributos inteiros, <code>texelFetch</code>, texture arrays e <code>gl_VertexID</code>.</li>
+  <li><strong>Saída</strong>: árvore <code>out/</code> descrita na seção 4, servida estaticamente com brotli pré-comprimido.</li>
+</ul>
+<p>Fora de escopo: mobiles, animações de personagens, multis (casas e barcos vêm do servidor), rede/protocolo.</p>
+
+<h2 id="fontes"><span class="n">1</span>Arquivos-fonte (formatos verificados)</h2>
+<div class="note warn"><p><strong>Docs desatualizados.</strong> Os HTMLs em <code>docs/FileStructures</code> são da era pré-ML/pré-HS. Divergências confirmadas: o map0 tem 896×512 blocos (doc diz 768×512); o tiledata usa flags de 64 bits (doc mostra 32); o hue dos statics é usado (doc diz que não). Use as especificações abaixo.</p></div>
+
+<div class="tbl"><table>
+<thead><tr><th>Arquivo</th><th>Uso</th><th>Formato</th></tr></thead>
+<tbody>
+<tr><td><code>map0LegacyMUL.uop</code></td><td>Terreno (fonte oficial)</td><td>UOP v5, 113 entradas <code>build/map0legacymul/%08d.dat</code>, 4096 blocos de 196 B cada, sem compressão. A concatenação tem 196 B extras: truncar em 458752 blocos.</td></tr>
+<tr><td><code>staidx0.mul</code></td><td>Índice dos statics</td><td>458752 × 12 B: <code>i32 lookup, i32 length, i32 extra</code>. Vazio se <code>lookup &lt; 0</code> ou <code>length &lt;= 0</code>.</td></tr>
+<tr><td><code>statics0.mul</code></td><td>Itens estáticos</td><td>Registros de 7 B: <code>u16 id, u8 x(0–7), u8 y(0–7), i8 z, u16 hue</code>.</td></tr>
+<tr><td><code>tiledata.mul</code></td><td>Flags, altura, textura</td><td>Formato HS, 3.188.736 B (ver 1.3).</td></tr>
+<tr><td><code>texidx.mul</code> + <code>texmaps.mul</code></td><td>Texturas do terreno</td><td>Índice de 12 B. Lado = <code>length==32768 ? 128 : 64</code>. Pixels u16 cor 555, linha a linha.</td></tr>
+<tr><td><code>artLegacyMUL.uop</code></td><td>Sprites</td><td>UOP, entradas <code>build/artlegacymul/%08d.tga</code>. Land: índice = id. Static: índice = <code>id + 0x4000</code> (ver 1.4).</td></tr>
+<tr><td><code>hues.mul</code></td><td>Recolorir statics</td><td>375 grupos × 708 B = 3000 hues. Grupo: <code>u32 header</code> + 8 × (<code>u16 colors[32], u16 tableStart, u16 tableEnd, char name[20]</code>).</td></tr>
+<tr><td><code>radarcol.mul</code></td><td>Cores do LOD distante</td><td><code>u16</code> 555 por id: land em <code>0..0x3FFF</code>, static em <code>0x4000+id</code>. Tem 81884 entradas; checar limites.</td></tr>
+<tr><td><code>animdata.mul</code>, <code>light.mul</code></td><td>Fase posterior</td><td>Frames de itens animados e mapas de luz.</td></tr>
+<tr><td><code>stadif*0.mul</code></td><td>Patches opcionais</td><td>Só aplicar se o servidor habilitar map diffs. Padrão: ignorar.</td></tr>
+</tbody></table></div>
+<div class="note warn"><p><strong>Não use <code>map0.mul</code>.</strong> É de 2010 e difere da UOP (2024) em 6114 blocos. <code>map0x.mul</code>/<code>map0xLegacyMUL.uop</code> são outra variante, com 4491 blocos diferentes. Deixe a variante configurável (<code>--variant x</code>).</p></div>
+
+<h3>1.1 Bloco do mapa e coordenadas</h3>
+<pre><code>Mapa: 7168 × 4096 tiles = 896 × 512 blocos de 8×8
+Bloco (196 B): u32 header (= índice do bloco, ignorar) + 64 × { u16 landId; i8 z; }
+blockIndex = bx * 512 + by          // coluna-major!
+cellIndex  = cy * 8 + cx            // dentro do bloco
+tile (x,y) = (bx*8 + cx, by*8 + cy)
+statics: mesmo blockIndex no staidx0; x,y do item são locais ao bloco</code></pre>
+
+<h3>1.2 Container UOP (MYP)</h3>
+<pre><code>Header (28 B úteis): char[4] "MYP\0"; u32 version(=5); u32 signature(=0xFD23EC43);
+                    u64 firstTableOffset; u32 tableCapacity(=1000); u32 fileCount
+Tabela:  u32 count; u64 nextTableOffset; count × Entry   (seguir até nextTableOffset == 0)
+Entry (34 B): u64 offset; u32 headerLength; u32 compressedLength; u32 decompressedLength;
+              u64 hash; u32 adler32; u16 flag (0 = cru, 1 = zlib)
+Dados em offset + headerLength. Ignorar entries com offset == 0.
+hash = Jenkins lookup3 hashlittle2(nome em minúsculas), retornando (pb &lt;&lt; 32) | pc</code></pre>
+<p>Vetores de teste (conferidos neste cliente):</p>
+<div class="tbl"><table>
+<thead><tr><th>Nome</th><th>Hash</th></tr></thead>
+<tbody>
+<tr><td><code>build/map0legacymul/00000000.dat</code></td><td><code>0xDBB7AFA433A3764B</code></td></tr>
+<tr><td><code>build/artlegacymul/00000003.tga</code></td><td><code>0xC7840107D7525481</code></td></tr>
+<tr><td><code>build/artlegacymul/00022423.tga</code> (static 0x1797)</td><td><code>0x30426BD346CAB539</code></td></tr>
+</tbody></table></div>
+
+<h3>1.3 tiledata.mul (HS)</h3>
+<pre><code>Land:   512 grupos × (u32 header + 32 × 30 B)  = 493.568 B  → 16384 entradas
+        entrada: u64 flags; u16 texId; char name[20]
+Static: 2048 grupos × (u32 header + 32 × 41 B) → 65536 entradas
+        off  0 u64 flags      off 13 u8  quantity   off 18 u8 stackingOffset
+        off  8 u8  weight     off 14 u16 animation  off 19 u8 value
+        off  9 u8  quality    off 16 u8  unk3       off 20 u8 height
+        off 10 u16 miscData   off 17 u8  hue        off 21 char name[20]
+        off 12 u8  unk2</code></pre>
+<p>Flags usadas: <code>Background 0x1</code>, <code>Transparent 0x4</code>, <code>Translucent 0x8</code>, <code>Wall 0x10</code>, <code>Impassable 0x40</code>, <code>Wet 0x80</code>, <code>Surface 0x200</code>, <code>Bridge 0x400</code>, <code>Window 0x1000</code>, <code>Foliage 0x20000</code>, <code>PartialHue 0x40000</code>, <code>LightSource 0x800000</code>, <code>Animation 0x1000000</code>, <code>Roof 0x10000000</code>, <code>Door 0x20000000</code>.</p>
+
+<h3>1.4 Art</h3>
+<ul>
+  <li><strong>Land</strong> (entrada de 2048 B): diamante 44×44. Para y = 0..21, ler <code>2·(y+1)</code> pixels começando em <code>x = 21−y</code>. Para y = 22..43, ler <code>2·(44−y)</code> pixels começando em <code>x = y−22</code>. Total de 1012 pixels; o resto é padding.</li>
+  <li><strong>Static</strong>: <code>u32 flag; u16 width; u16 height; u16 lookup[height]</code>. A linha y começa no byte <code>8 + 2·height + 2·lookup[y]</code>. Cada linha tem runs <code>u16 xOffset; u16 xRun; u16 pixels[xRun]</code> e termina em <code>(0,0)</code>. Pixels não escritos são transparentes.</li>
+  <li><strong>Cor</strong>: <code>xRRRRRGGGGGBBBBB</code> (555; bit 15 ignorado). Pixel 0x0000 dentro de um run é tratado como transparente pela convenção do ClassicUO <span class="pill">validar</span>.</li>
+</ul>
+
+<h2 id="medidas"><span class="n">2</span>Medidas do map0 (usar como asserts)</h2>
+<div class="stats">
+  <div class="stat"><b>458.752</b><span>blocos (896×512)</span></div>
+  <div class="stat"><b>2.900.876</b><span>statics em 120.254 blocos</span></div>
+  <div class="stat"><b>1.496</b><span>land ids usados</span></div>
+  <div class="stat"><b>5.983</b><span>static ids usados, todos presentes na art UOP</span></div>
+  <div class="stat"><b>1.446</b><span>texmaps usados (1167 de 64², 279 de 128²)</span></div>
+  <div class="stat"><b>−128…127</b><span>faixa de z (land e statics)</span></div>
+</div>
+<div class="tbl"><table>
+<thead><tr><th>Fato</th><th class="num">Valor</th><th>Consequência</th></tr></thead>
+<tbody>
+<tr><td>Células de água sem texmap (ids 168–171)</td><td class="num">15.062.772 (51%)</td><td>Material “água” no shader do terreno.</td></tr>
+<tr><td>Células void 0x244</td><td class="num">4.030.842</td><td>700 chunks de 64² são inteiramente void: não gerar.</td></tr>
+<tr><td>Outros void: 0x0002 “NODRAW”, 0x01DB, 0x01AE–0x01B5</td><td class="num">~182k</td><td>Material void.</td></tr>
+<tr><td>Blocos 8×8 com z constante</td><td class="num">357.957 (78%)</td><td>Terreno comprime muito; flag <code>allFlat</code>.</td></tr>
+<tr><td>|Δz| entre vizinhos: média / p99 / máx.</td><td class="num">0,47 / 10 / 173</td><td>Relevo suave; LOD geomipmap funciona bem.</td></tr>
+<tr><td>Statics de água (<code>Wet</code>, height 0)</td><td class="num">1.049.629</td><td>Viram camada de água, não instâncias (−36%).</td></tr>
+<tr><td>Duplicatas exatas (id, x, y, z)</td><td class="num">10.043</td><td>Remover.</td></tr>
+<tr><td>Instâncias após remover a água</td><td class="num">1.849.198</td><td>Ainda inclui as duplicatas e os NoDraw. 8 B cada.</td></tr>
+<tr><td>Statics por chunk 64²: p95 / máx.</td><td class="num">1.703 / 5.469</td><td>1 draw instanciado por chunk.</td></tr>
+<tr><td>Land ids distintos por chunk 64²: média / máx.</td><td class="num">23 / 195</td><td>—</td></tr>
+<tr><td>Instâncias Translucent / Foliage / Roof</td><td class="num">5.856 / 232.808 / 100.147</td><td>Passe blend; fade; ocultar telhado.</td></tr>
+<tr><td>Instâncias LightSource / Animation</td><td class="num">8.529 / 5.539</td><td>Listas separadas por chunk.</td></tr>
+<tr><td>Hue ≠ 0 nos statics</td><td class="num">26.250 (283 hues)</td><td>Tabela de hues no shader.</td></tr>
+<tr><td>Pixels de sprite (estimativa, bbox)</td><td class="num">~22,6 M</td><td>~2 páginas de atlas 4096².</td></tr>
+</tbody></table></div>
+
+<h2 id="render"><span class="n">3</span>Modelo de renderização</h2>
+<p>Os arquivos não contêm modelos 3D. A art do UO é pré-renderizada numa projeção oblíqua fixa: o chão aparece sem encurtamento (tile = diamante 44×44) e cada unidade de z sobe 4 px. Daí as escolhas abaixo.</p>
+<ul>
+  <li><strong>Terreno</strong>: malha 3D real com heightmap e texmaps.</li>
+  <li><strong>Statics</strong>: cards (quads com sprite) ancorados no canto sul do tile, o ponto de mundo <code>(x+1, y+1, z)</code>. A base-centro do sprite cai nesse ponto, como no cliente 2D: <code>drawX = sx − w/2 + 22</code>, <code>drawY = sy − h + 44</code>.</li>
+</ul>
+
+<h3>3.1 Câmera clássica (padrão, fiel ao cliente)</h3>
+<pre><code>sx = (x − y) · 22
+sy = (x + y) · 22 − z · 4          // pixels; zoom = escala uniforme
+Unidades de mundo: 1 tile = 1.0; z bruto (i8) × Z_SCALE, Z_SCALE = 4 / (22·√2) ≈ 0.1286</code></pre>
+<p>A ordem de desenho segue o cliente, com o z-buffer no lugar do painter's sort:</p>
+<pre><code>prioZ(static) = z − (Background ? 1 : 0) + (height &gt; 0 ? 1 : 0)   // = PriorityZ do ClassicUO
+prioZ(land)   = min/avg z dos 4 cantos − 1
+key = ((x + y − viewBase) · 512 + (prioZ + 256)) · 128 + tie       // cabe em 24 bits
+tie = ordem do item dentro da célula (statics vêm ordenados do arquivo)</code></pre>
+<ul>
+  <li>Cada card recebe <code>gl_Position.z</code> constante = key normalizada, então nada é ordenado na CPU e não há <code>gl_FragDepth</code>, o que mantém o early-z.</li>
+  <li>O terreno usa o mesmo esquema: os 6 vértices de um tile têm a mesma profundidade (a key do tile), enquanto <code>xy</code> vem da projeção.</li>
+  <li><code>viewBase</code> = <code>x+y</code> do centro da câmera menos uma margem, recalculado por frame.</li>
+</ul>
+
+<h3>3.2 Câmera livre (fase 5)</h3>
+<p>Perspectiva com rotação livre e profundidade geométrica real. Os statics viram billboards cilíndricos (giram só em yaw) com alpha-test. Paredes ficam como cartões; o refinamento opcional é reprojetar a art de Wall, Surface e Roof em quads verticais ou horizontais reais.</p>
+
+<h2 id="formatos"><span class="n">4</span>Formatos de saída</h2>
+<pre><code>out/
+  shared/
+    sprites_0.bin, sprites_1.bin …  páginas de atlas 4096×4096, RGB5_A1 cru
+    sprites.bin                     tabela de sprites (16 B cada)
+    land64.bin, land128.bin         texture arrays do terreno, RGB5_A1, com mips
+    materials.bin                   landId → material
+    hues.bin                        32×3000 RGB5_A1
+    waterkinds.bin                  índice u8 → sprite de água
+  map0/
+    manifest.json
+    terrain/{cx}_{cy}.bin           ~6413 chunks (void puro omitido)
+    statics/{cx}_{cy}.bin
+    overview/radar_L{n}_{i}_{j}.webp
+Todos os .bin também saem como .bin.br (brotli q11), servidos com Content-Encoding: br.</code></pre>
+
+<h3>4.1 manifest.json</h3>
+<pre><code>{ "map": 0, "width": 7168, "height": 4096, "chunk": 64,
+  "chunksX": 112, "chunksY": 64, "zScale": 0.12856,
+  "chunks": "bitset base64 de 7168 bits (1 = existe)",
+  "chunkMeta": "base64 de i8 zMin,zMax por chunk (para AABB sem baixar o chunk)",
+  "atlasPages": 2, "sprites": 6200, "landLayers": {"64": 1200, "128": 279},
+  "version": "sha1 dos fontes", "files": {"shared/sprites_0.bin": "hash"} }</code></pre>
+
+<h3>4.2 terrain/{cx}_{cy}.bin — <code>TRN1</code></h3>
+<div class="tbl"><table>
+<thead><tr><th class="num">Offset</th><th>Campo</th><th>Notas</th></tr></thead>
+<tbody>
+<tr><td class="num">0</td><td><code>u32 magic = 'TRN1'</code></td><td></td></tr>
+<tr><td class="num">4</td><td><code>u16 cx, cy</code></td><td></td></tr>
+<tr><td class="num">8</td><td><code>i8 zMin, zMax</code></td><td>Para AABB e culling</td></tr>
+<tr><td class="num">10</td><td><code>u16 flags</code></td><td>bit0 hasWater · bit1 allFlat · bit2 hasVoid · bit3 hasDiag</td></tr>
+<tr><td class="num">12</td><td><code>u32 reserved</code></td><td>Header de 16 B</td></tr>
+<tr><td class="num">16</td><td><code>u16 material[64·64]</code></td><td>Índice em materials; <code>0xFFFF</code> = void. Vira textura R16UI.</td></tr>
+<tr><td class="num">8208</td><td><code>i8 height[65·65]</code> + 3 B pad</td><td>Vértice (i,j) = z da célula (cx·64+i, cy·64+j). Linha/coluna 65 vêm do chunk vizinho (borda do mapa: repetir). Se allFlat: só 1 byte + pad 3. Vira textura R8I.</td></tr>
+<tr><td class="num">…</td><td><code>u8 diag[512]</code></td><td>Só se hasDiag (ver 8).</td></tr>
+<tr><td class="num">…</td><td><code>i8 waterZ[4096]</code>, <code>u8 waterKind[4096]</code></td><td>Só se hasWater. <code>−128</code> = sem água estática. waterKind indexa waterkinds.bin.</td></tr>
+</tbody></table></div>
+
+<h3>4.3 statics/{cx}_{cy}.bin — <code>STA1</code> (SoA, 8 B por instância)</h3>
+<pre><code>header (24 B): u32 'STA1'; u16 cx, cy; u32 count; u32 nOpaque; u32 nTransl; u16 nAnim; u16 nLight; u32 reserved
+u32 A[count]:  bits 0–5 x · 6–11 y · 12–19 (z+128) · 20–31 flags
+               flags: 0 Background · 1 Surface · 2 Wall · 3 Roof · 4 Foliage · 5 Translucent
+                      6 Window · 7 PartialHue · 8 Light · 9 Animation · 10 Door · 11 reservado
+u32 B[count]:  bits 0–15 spriteIndex (compacto) · 16–31 hue (0 = nenhum; já com 0x3FFF aplicado, 1-based)
+u16 animIdx[nAnim]; u16 lightIdx[nLight]   // índices em A/B; pad até 4 B
+Ordem: [0, nOpaque) opacos; [nOpaque, count) translúcidos.
+Ambos ordenados por (x+y, prioZ, tie).</code></pre>
+<p>No cliente: o arquivo inteiro vai para um único <code>ARRAY_BUFFER</code> com dois <code>vertexAttribIPointer</code> (offset 24 e <code>24 + 4·count</code>, stride 4, divisor 1). O SoA comprime melhor e evita copiar dados.</p>
+
+<h3>4.4 sprites.bin e atlas</h3>
+<pre><code>u32 'SPR1'; u32 count; count × 16 B:
+  u16 ax, ay, w, h      // retângulo no atlas (já recortado das margens transparentes)
+  i16 ox, oy            // deslocamento do canto sup-esq do recorte até a âncora (base-centro do art original)
+  u8  page; u8 tdHeight // altura do tiledata
+  u16 origId            // id original (static) ou 0x8000|landId para land art
+No cliente: textura RGBA16UI de 2 texels por sprite, lida com texelFetch no vertex shader.</code></pre>
+<ul>
+  <li><strong>Páginas</strong>: 4096×4096 em <code>RGB5_A1</code> (<code>gl.RGB5_A1</code>, type <code>UNSIGNED_SHORT_5_5_5_1</code>). Conversão por pixel: <code>out = ((c &amp; 0x7FFF) &lt;&lt; 1) | 1</code> se opaco, <code>0</code> se transparente. É lossless, usa metade da VRAM de RGBA8 e sobe com <code>texImage2D</code> direto.</li>
+  <li><strong>Empacotamento</strong>: recortar a bbox opaca, MaxRects, gutter de 2 px com bordas extrudadas. Sem mips no modo clássico (zoom em passos de 0,5×). Para o modo livre, gerar mips em RGBA8 pré-multiplicado.</li>
+  <li><strong>Mobile</strong>: build alternativo em KTX2/UASTC.</li>
+  <li><strong>Conteúdo</strong>: os 5983 statics usados e as land arts necessárias (seção 4.5).</li>
+</ul>
+
+<h3>4.5 Terreno: materials.bin, land64/land128</h3>
+<pre><code>u32 'MAT1'; u16 landToMat[16384]; u32 nMat; nMat × 12 B:
+  u8 kind      // 0 texmap · 1 só art · 2 água · 3 void
+  u8 texArray  // 0 = land64, 1 = land128, 255 = nenhum
+  u16 texLayer; u16 artLayer (em land64); u16 radar555; u32 flags (tiledata, 32 bits baixos)</code></pre>
+<ul>
+  <li><strong>texmaps</strong>: <code>land64</code> com 1167 camadas de 64² e <code>land128</code> com 279 de 128², ambos RGB5_A1 com mips offline.</li>
+  <li><strong>Limite de camadas</strong>: o WebGL2 garante só 256 em <code>MAX_ARRAY_TEXTURE_LAYERS</code>. Se o limite real for menor, dividir em vários arrays (o campo texArray já suporta) ou cair para um atlas 2D com gutter.</li>
+  <li><strong>Land art</strong>: diamante 44×44 rotacionado −45° → quadrado 32×32 (amostragem nearest), ampliado para 64². Serve aos ids sem texmap (água 168–171, 11790–11833) e ao modo fiel (ver 8).</li>
+  <li><strong>Mapeamento de UV</strong>: 1 tile = textura inteira, UV 0..1, sem repetição. As transições (grama→terra etc.) já são tiles próprios; não há splatting.</li>
+</ul>
+
+<h3>4.6 hues.bin e waterkinds.bin</h3>
+<ul>
+  <li><strong>hues.bin</strong>: textura 32×3000 RGB5_A1 com as 32 cores de cada hue.</li>
+  <li><strong>Aplicação no shader</strong>: <code>idx = R5(pixel)</code>; cor = <code>hues[hue−1][idx]</code>. Com PartialHue, aplicar só se <code>r==g==b</code>.</li>
+  <li><strong>waterkinds.bin</strong>: <code>u16 spriteIndex[n]</code> dos statics de água (n ≤ 255).</li>
+</ul>
+
+<h3>4.7 Overview (LOD distante)</h3>
+<p>Imagem de 7168×4096 com <code>radarcol</code> do static mais alto de cada tile (ou da land), em pirâmide de tiles 512² (WebP lossless; L0 = 1 px/tile, L1 = 1/2, …). Junto, um heightmap reduzido (max-z em 4×4) para a malha distante.</p>
+
+<h2 id="pipeline"><span class="n">5</span>Pipeline de conversão</h2>
+<ol>
+  <li><strong>Carregar e validar.</strong> Ler as fontes da seção 1. Conferir os hashes de teste e os números da seção 2; falhar se divergirem (exceto com <code>--variant</code>).</li>
+  <li><strong>Grids globais.</strong> Montar <code>landId[4096][7168]</code> (u16) e <code>z[4096][7168]</code> (i8) a partir da UOP, na ordem de blocos da seção 1.1.</li>
+  <li><strong>Materiais.</strong> Para cada land id usado:
+    <ul>
+      <li>void se for 0x0002, 0x01DB, 0x01AE–0x01B5 ou 0x0244 (0x01B9–0x01BD aparecem 240 vezes: verificar);</li>
+      <li>água se tiver flag <code>Wet</code> e <code>texId == 0</code>;</li>
+      <li>texmap se <code>texId</code> existir em texidx;</li>
+      <li>senão, só art.</li>
+    </ul>
+    Gerar <code>landToMat</code>, as camadas land64/128 e as land arts.</li>
+  <li><strong>Chunks de terreno.</strong> Para cada chunk 64² que não seja 100% void:
+    <ul>
+      <li>montar <code>material</code> e <code>height</code> 65×65 (com borda do vizinho);</li>
+      <li>calcular zMin/zMax e as flags allFlat e hasVoid.</li>
+    </ul></li>
+  <li><strong>Statics.</strong> Ler os blocos de cada chunk e converter x,y para coordenadas locais do chunk (0–63). Depois, nesta ordem:
+    <ol>
+      <li>Remover duplicatas exatas.</li>
+      <li>Remover ids NoDraw: 0x0001, 0x21BC, 0x63D3, 0x2198–0x21A4, e nomes do tiledata iguais a “nodraw” (conferir com <code>IsNoDrawable</code> do ClassicUO).</li>
+      <li>Extrair a água: <code>Wet ∧ height==0 ∧ art 44×44</code> → <code>waterZ</code> (maior z do tile) + <code>waterKind</code>. As demais águas do mesmo tile em z diferente ficam como statics.</li>
+      <li>Calcular as flags, <code>prioZ</code> e <code>tie</code>.</li>
+      <li>Separar opacos e translúcidos, ordenar por (x+y, prioZ, tie).</li>
+      <li>Gerar as listas anim e light.</li>
+    </ol></li>
+  <li><strong>Sprites.</strong> Juntar os ids usados em todos os chunks, decodificar a art, converter para 5551, recortar, empacotar, gravar páginas e tabela, e remapear <code>B.spriteIndex</code>.</li>
+  <li><strong>Hues, radar e overview.</strong></li>
+  <li><strong>Gravar e comprimir.</strong> Brotli q11 em paralelo. Gerar o manifest com hashes para cache-busting.</li>
+  <li><strong>Relatório.</strong> Contagens finais, bytes por categoria e chunks maiores.</li>
+</ol>
+<div class="note"><p><strong>Tamanhos medidos no protótipo (zlib-9; brotli fica 10–20% menor):</strong> terreno 82,9 MB → 13,8 MB (6413 chunks, média de 2,2 KB); statics 14,8 MB → 4,7 MB. A fonte tem ~110 MB. Somam-se ~2 páginas de atlas (32 MB cada sem compressão; o brotli reduz bastante por causa das áreas transparentes) e ~19 MB de texmaps.</p></div>
+
+<h2 id="runtime"><span class="n">6</span>Runtime no navegador</h2>
+<h3>6.1 Carga</h3>
+<ul>
+  <li>Um Web Worker faz <code>fetch</code> dos chunks (prioridade pela distância à câmera) e devolve <code>ArrayBuffer</code> transferível. Com <code>Content-Encoding: br</code>, o navegador descomprime sozinho.</li>
+  <li>A thread principal só cria texturas e buffers: <code>texImage2D</code> e <code>bufferData</code> sobre views do mesmo buffer, sem parse.</li>
+  <li>Cache LRU de ~150 chunks na GPU. Descarregar chunks fora de um raio com histerese.</li>
+</ul>
+<h3>6.2 Terreno</h3>
+<ul>
+  <li>Sem vertex buffer: <code>drawArrays(TRIANGLES, 0, 4096·6)</code> por chunk. No vertex shader, <code>tile = gl_VertexID / 6</code>, o canto sai da tabela de 6 entradas e a altura vem de <code>texelFetch(heightTex)</code>.</li>
+  <li>Diagonal fixa entre os cantos leste <code>(x+1,y)</code> e oeste <code>(x,y+1)</code>, igual ao triangle strip (top, right, left, bottom) do ClassicUO. Se hasDiag, ler o bit.</li>
+  <li>Fragment: material por <code>texelFetch(matTex, tile)</code> passado como <code>flat</code>, e camada do texture array. A normal vem de diferenças finitas da altura (iluminação do modo livre).</li>
+  <li>Água (kind 2): UV animado + leve ondulação de cor. Void: <code>discard</code> (ou preto).</li>
+  <li>LOD: grids mais grossos (stride 2, 4, 8) com saias para os chunks distantes. Além de N chunks, usar a malha do overview com a textura de radar.</li>
+</ul>
+<h3>6.3 Statics</h3>
+<ul>
+  <li><code>drawArraysInstanced(TRIANGLE_STRIP, 0, 4, n)</code> por chunk, em dois passes.</li>
+  <li><strong>Passe 1</strong>: opacos com alpha-test (<code>discard</code> se a &lt; 0,5) e depth write.</li>
+  <li><strong>Passe 2</strong>: translúcidos com blend e sem depth write, chunks em ordem de trás para frente (a ordem interna já vem do arquivo).</li>
+  <li>O vertex shader decodifica A/B, busca o sprite em <code>spriteTex</code>, calcula a âncora e expande o quad em pixels × zoom.</li>
+  <li>Uniforms <code>roofCutZ</code> e <code>playerTile</code>: escondem Roof acima do jogador e esmaecem Foliage na frente dele.</li>
+  <li>Água estática: um passe próprio desenha quads horizontais em <code>waterZ</code> com o sprite do <code>waterKind</code> (no modo clássico fica idêntico ao sprite).</li>
+</ul>
+<h3>6.4 Orçamento esperado</h3>
+<p>~25 chunks visíveis no modo clássico, ou seja, menos de 100 draw calls, ~40k instâncias e ~600k vértices de terreno. Isso deve rodar a 60 fps em GPU integrada. VRAM: atlas ~64 MB, texturas de terreno ~19 MB, chunks ~20 KB cada.</p>
+
+<h2 id="fases"><span class="n">7</span>Fases e critérios de aceite</h2>
+<div class="phase"><div class="k">F1</div><div><h4>Conversor de terreno + viewer só com terreno</h4><p>Aceite: asserts da seção 2 passam; vista de cima de Britain (~1495, 1629) bate com o mapa exportado pelo UOFiddler; sem costuras entre chunks.</p></div></div>
+<div class="phase"><div class="k">F2</div><div><h4>Atlas, statics e câmera clássica</h4><p>Aceite: 1.849.198 − duplicatas − NoDraw instâncias; captura em Britain comparável lado a lado com o cliente/ClassicUO; nenhuma ordenação na CPU para opacos.</p></div></div>
+<div class="phase"><div class="k">F3</div><div><h4>Água, hues, translúcidos, roof e foliage</h4><p>Aceite: costa e rios contínuos; itens com hue corretos; telhados somem ao entrar em casa.</p></div></div>
+<div class="phase"><div class="k">F4</div><div><h4>LOD distante (radar + heightmap)</h4><p>Aceite: zoom-out até o mapa inteiro mantendo 60 fps; menos de 300 MB de memória JS + GPU.</p></div></div>
+<div class="phase"><div class="k">F5</div><div><h4>Câmera livre e reprojeção opcional de wall/floor/roof</h4><p>Aceite: órbita sem z-fighting grosseiro; billboards estáveis.</p></div></div>
+<div class="phase"><div class="k">F6</div><div><h4>Demais mapas</h4><p>map1 7168×4096 · map2 2304×1600 · map3 2560×2048 · map4 1448×1448 · map5 1280×4096. Mesmo pipeline com dimensões por parâmetro (altura em blocos = height/8).</p></div></div>
+
+<h2 id="validar"><span class="n">8</span>Pontos a validar</h2>
+<div class="tbl"><table>
+<thead><tr><th>Item</th><th>Hipótese adotada</th><th>Como validar</th></tr></thead>
+<tbody>
+<tr><td>Land 0x0244</td><td>Void (preto) fora de dungeons</td><td>Renderizar uma área de borda de dungeon e comparar com o cliente.</td></tr>
+<tr><td>Diagonal do quad</td><td>Fixa leste–oeste</td><td>Comparar encostas íngremes. Se divergir, ativar <code>hasDiag</code> com a regra de menor |Δz|.</td></tr>
+<tr><td>Tile plano vs. inclinado</td><td>Cliente 2D: plano usa land art, inclinado usa texmap</td><td>Modo “fiel” com essa regra (materials tem os dois); modo “suave” usa sempre texmap. Escolher visualmente.</td></tr>
+<tr><td>Lista NoDraw</td><td>Seção 5, passo 5</td><td>Conferir com o fonte do ClassicUO.</td></tr>
+<tr><td>Pixel 0x0000 na art</td><td>Transparente</td><td>Inspecionar sprites com contorno preto.</td></tr>
+<tr><td>prioZ e ordem</td><td>Fórmula do ClassicUO</td><td>Casos difíceis: escadas, pontes, árvores sobre muros.</td></tr>
+<tr><td>Variante <code>x</code></td><td>Usar a não-x</td><td>Confirmar com o servidor alvo.</td></tr>
+</tbody></table></div>
+
+<footer>Medidas tiradas dos arquivos deste cliente com um protótipo em Python (parser UOP com hashlittle2, leitura de tiledata HS e compressão de chunks de teste). Referência de comportamento visual: código-fonte do ClassicUO.</footer>
+</main>
+</div>

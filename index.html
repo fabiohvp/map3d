@@ -1,0 +1,1040 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Britannia 3D</title>
+<style>
+  :root {
+    --sky: #9fb8c8;
+    --panel: rgba(16, 22, 20, .82);
+    --fg: #e4ebe7;
+    --muted: #9db0a8;
+    --accent: #6cc4a8;
+    --line: rgba(255, 255, 255, .12);
+    --font: "Segoe UI", system-ui, -apple-system, sans-serif;
+    --mono: "Cascadia Code", Consolas, ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--sky); color: var(--fg); font: 13px/1.45 var(--font); }
+  canvas#gl { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+  canvas#gl:active { cursor: grabbing; }
+  .panel { position: fixed; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; backdrop-filter: blur(6px); }
+  #hud { top: 12px; left: 12px; width: 250px; display: grid; gap: 8px; }
+  #hud h1 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: .02em; }
+  #pos { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--accent); }
+  #stats { font-family: var(--mono); color: var(--muted); font-size: 12px; white-space: pre-line; }
+  .opts { display: flex; gap: 14px; }
+  label.chk { display: flex; align-items: center; gap: 6px; color: var(--fg); cursor: pointer; }
+  label.chk input { accent-color: var(--accent); margin: 0; }
+  label { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; color: var(--muted); font-size: 12px; }
+  label input[type=range] { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); }
+  form.goto { display: flex; gap: 6px; }
+  form.goto input { width: 0; flex: 1; min-width: 0; background: rgba(0,0,0,.3); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; font: 12px var(--mono); }
+  form.goto button { background: var(--accent); color: #0d1714; border: 0; border-radius: 4px; padding: 4px 10px; font-weight: 600; cursor: pointer; }
+  .mapsel { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+  .mapsel select { flex: 1; min-width: 0; background: rgba(0,0,0,.3); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; font: 12px var(--font); }
+  .mapsel select option { background: #18201d; color: var(--fg); }
+  details { color: var(--muted); font-size: 12px; }
+  details summary { cursor: pointer; }
+  details ul { margin: 6px 0 0; padding-left: 16px; }
+  #mini { right: 12px; bottom: 12px; padding: 6px; }
+  #mini .wrap { position: relative; width: 300px; cursor: crosshair; }
+  #mini img { width: 100%; height: 100%; display: block; image-rendering: pixelated; border-radius: 4px; }
+  #mini .view { position: absolute; border: 1.5px solid #fff; box-shadow: 0 0 0 1px #000; pointer-events: none; transform: translate(-50%, -50%); }
+  #msg { inset: 0; margin: auto; width: min(520px, calc(100% - 32px)); height: fit-content; font-size: 14px; }
+  #msg code { font-family: var(--mono); background: rgba(0,0,0,.35); padding: 1px 5px; border-radius: 3px; }
+  @media (max-width: 640px) { #mini .wrap { width: 180px; } #hud { width: 210px; } }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+
+<div id="hud" class="panel">
+  <h1 id="title">Britannia 3D</h1>
+  <div class="mapsel"><span>Mapa</span><select id="map" aria-label="Mapa"></select></div>
+  <div id="pos">—</div>
+  <div id="stats">carregando…</div>
+  <div class="opts">
+    <label class="chk" for="opt-statics"><input id="opt-statics" type="checkbox"> Construções</label>
+    <label class="chk" for="opt-roofs"><input id="opt-roofs" type="checkbox"> Telhados</label>
+    <label class="chk" for="opt-smooth"><input id="opt-smooth" type="checkbox"> Relevo suave</label>
+  </div>
+  <label for="zs">Escala de altura <span id="zsv"></span><input id="zs" type="range" min="0.03" max="0.5" step="0.005"></label>
+  <label for="rad">Distância de visão <span id="radv"></span><input id="rad" type="range" min="2" max="14" step="1"></label>
+  <form class="goto" id="goto"><input id="gx" inputmode="numeric" placeholder="x" aria-label="x"><input id="gy" inputmode="numeric" placeholder="y" aria-label="y"><button>Ir</button></form>
+  <details><summary>Controles</summary><ul>
+    <li>Arrastar: mover</li><li>Botão direito ou Ctrl + arrastar: girar / inclinar</li>
+    <li>Roda ou pinça: zoom</li><li>WASD / setas: mover · Q/E: girar</li><li>Clique no minimapa: teleporte</li>
+  </ul></details>
+</div>
+
+<div id="mini" class="panel"><div class="wrap" id="miniWrap"><img id="radar" alt="Minimapa"><div class="view" id="miniView"></div></div></div>
+<div id="msg" class="panel" hidden></div>
+
+<script>
+'use strict';
+const DATA = new URLSearchParams(location.search).get('data') || 'data';
+const MAP = Math.max(0, parseInt(new URLSearchParams(location.search).get('map') ?? '0', 10) || 0);
+const CH = 64;
+
+// ------------------------------------------------------------ util
+const $ = (id) => document.getElementById(id);
+function fail(html) { const m = $('msg'); m.innerHTML = html; m.hidden = false; throw new Error(m.textContent); }
+let BUILD = '';
+async function getBuf(url) { const r = await fetch(url + BUILD); if (!r.ok) throw new Error(url + ': ' + r.status); return r.arrayBuffer(); }
+
+const mat4 = {
+  perspective(fovy, aspect, near, far) {
+    const f = 1 / Math.tan(fovy / 2), nf = 1 / (near - far);
+    return new Float32Array([f / aspect, 0, 0, 0, 0, f, 0, 0, 0, 0, (far + near) * nf, -1, 0, 0, 2 * far * near * nf, 0]);
+  },
+  lookAt(e, c, up) {
+    let zx = e[0] - c[0], zy = e[1] - c[1], zz = e[2] - c[2];
+    let l = Math.hypot(zx, zy, zz); zx /= l; zy /= l; zz /= l;
+    let xx = up[1] * zz - up[2] * zy, xy = up[2] * zx - up[0] * zz, xz = up[0] * zy - up[1] * zx;
+    l = Math.hypot(xx, xy, xz); xx /= l; xy /= l; xz /= l;
+    const yx = zy * xz - zz * xy, yy = zz * xx - zx * xz, yz = zx * xy - zy * xx;
+    return new Float32Array([xx, yx, zx, 0, xy, yy, zy, 0, xz, yz, zz, 0,
+      -(xx * e[0] + xy * e[1] + xz * e[2]), -(yx * e[0] + yy * e[1] + yz * e[2]), -(zx * e[0] + zy * e[1] + zz * e[2]), 1]);
+  },
+  mul(a, b) {
+    const o = new Float32Array(16);
+    for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++)
+      o[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+    return o;
+  },
+};
+
+function frustumPlanes(m) {
+  const p = [];
+  for (const [i, s] of [[0, 1], [0, -1], [1, 1], [1, -1], [2, 1], [2, -1]]) {
+    const a = m[3] + s * m[i], b = m[7] + s * m[4 + i], c = m[11] + s * m[8 + i], d = m[15] + s * m[12 + i];
+    const l = Math.hypot(a, b, c); p.push([a / l, b / l, c / l, d / l]);
+  }
+  return p;
+}
+function boxVisible(planes, mn, mx) {
+  for (const [a, b, c, d] of planes)
+    if (a * (a > 0 ? mx[0] : mn[0]) + b * (b > 0 ? mx[1] : mn[1]) + c * (c > 0 ? mx[2] : mn[2]) + d < 0) return false;
+  return true;
+}
+
+// ------------------------------------------------------------ GL
+const canvas = $('gl');
+const gl = canvas.getContext('webgl2', { antialias: true });
+if (!gl) fail('Este navegador não suporta <b>WebGL2</b>.');
+
+const VS = `#version 300 es
+precision highp float; precision highp int;
+uniform highp isampler2D uH;   // 66x66: alturas dos tiles -1..64 do chunk
+uniform mat4 uVP;
+uniform vec2 uOrigin;
+uniform float uZS;
+uniform int uS;                // subdivisões por lado de tile (1, 2 ou 4)
+uniform ivec4 uNb;             // subdivisões dos chunks vizinhos: oeste, leste, norte, sul
+uniform bool uSmooth;
+out vec3 vWorld;
+out vec2 vLocal;
+out vec3 vNormal;
+// sub-quad = 2 triângulos: (norte, leste, oeste) e (leste, sul, oeste)
+const ivec2 C[6] = ivec2[6](ivec2(0,0), ivec2(1,0), ivec2(0,1), ivec2(1,0), ivec2(1,1), ivec2(0,1));
+float T(ivec2 i) { return float(texelFetch(uH, clamp(i + 1, ivec2(0), ivec2(65)), 0).r); }
+// Relevo suave: o centro de cada tile fica na altura do tile; entre centros vizinhos a altura
+// é interpolada com smoothstep nos dois eixos. Assim a borda entre dois tiles fica na média
+// deles (0 e 5 → cada um curva 2,5 até o encontro) e o canto fica na média dos 4 tiles que
+// o tocam, incluindo o diagonal. Inclinação zero nos centros, contínua nas bordas.
+// Retorna (altura, ∂h/∂x, ∂h/∂y) em unidades de z.
+vec3 surf(vec2 p) {
+  vec2 g = p - 0.5;
+  ivec2 i = ivec2(floor(g));
+  vec2 f = g - vec2(i);
+  vec2 s = f * f * (3.0 - 2.0 * f), ds = 6.0 * f * (1.0 - f);
+  float a = T(i), b = T(i + ivec2(1, 0)), c = T(i + ivec2(0, 1)), d = T(i + ivec2(1, 1));
+  float top = mix(a, b, s.x), bot = mix(c, d, s.x);
+  return vec3(mix(top, bot, s.y), ds.x * mix(b - a, d - c, s.y), ds.y * (bot - top));
+}
+void main() {
+  int n = 64 * uS;
+  int q = gl_VertexID / 6;
+  ivec2 ip = ivec2(q % n, q / n) + C[gl_VertexID - q * 6];
+  vec2 p = vec2(ip) / float(uS);
+  vec3 h;
+  if (!uSmooth) {
+    h = vec3(T(ip), 0.0, 0.0);   // modo clássico: altura do tile no canto noroeste
+  } else {
+    h = surf(p);
+    // borda com chunk de LOD mais grosso: segue a reta entre os vértices do vizinho (sem rachaduras)
+    int ns = uS, u = 0;
+    bool alongY = false;
+    if (ip.x == 0 && uNb.x < uS)      { ns = uNb.x; u = ip.y; alongY = true; }
+    else if (ip.x == n && uNb.y < uS) { ns = uNb.y; u = ip.y; alongY = true; }
+    else if (ip.y == 0 && uNb.z < uS) { ns = uNb.z; u = ip.x; }
+    else if (ip.y == n && uNb.w < uS) { ns = uNb.w; u = ip.x; }
+    int r = uS / ns, k = u % r;
+    if (k != 0) {
+      vec2 dir = (alongY ? vec2(0.0, 1.0) : vec2(1.0, 0.0)) / float(uS);
+      vec2 p0 = p - dir * float(k);
+      h = mix(surf(p0), surf(p0 + dir * float(r)), float(k) / float(r));
+    }
+  }
+  vLocal = p;
+  vNormal = uSmooth ? vec3(-h.y * uZS, 1.0, -h.z * uZS) : vec3(0.0);
+  vWorld = vec3(uOrigin.x + p.x, h.x * uZS, uOrigin.y + p.y);
+  gl_Position = uVP * vec4(vWorld, 1.0);
+}`;
+
+const FS = `#version 300 es
+precision highp float; precision highp int;
+uniform highp usampler2D uM;
+uniform highp usampler2D uMat;
+uniform highp sampler2DArray uT64;
+uniform highp sampler2DArray uT128;
+uniform vec3 uEye, uSun, uFog;
+uniform vec2 uFogRange, uCenter;
+uniform float uTime;
+uniform float uRep;    // tiles por repetição da textura: 1 = uma textura por tile (clássico)
+uniform float uBlend;  // 0 = bordas duras; > 0 = largura da transição suave entre materiais vizinhos
+in vec3 vWorld;
+in vec2 vLocal;
+in vec3 vNormal;
+out vec4 outColor;
+// cor do material m; kind: 0 textura, 1 art, 2 água, 3 void
+vec3 matCol(uint m, vec2 uv, vec2 gx, vec2 gy, out uint kind) {
+  if (m == 65535u) { kind = 3u; return vec3(0.015, 0.016, 0.02); }
+  uvec4 d = texelFetch(uMat, ivec2(int(m), 0), 0); // kind, texArray, texLayer, artLayer
+  kind = d.x;
+  if (d.x == 0u)
+    return d.y == 1u ? textureGrad(uT128, vec3(uv, float(d.z)), gx, gy).rgb
+                     : textureGrad(uT64, vec3(uv, float(d.z)), gx, gy).rgb;
+  vec2 u2 = uv;
+  if (d.x == 2u) {
+    u2 += vec2(uTime * 0.035, uTime * 0.02);
+    if (uRep <= 1.0) u2 = fract(u2);
+  }
+  return textureGrad(uT64, vec3(u2, float(d.w)), gx, gy).rgb;
+}
+void main() {
+  ivec2 t = clamp(ivec2(floor(vLocal)), ivec2(0), ivec2(63));
+  uint m = texelFetch(uM, t, 0).r;
+  // Enhanced: uv contínuo no mundo (textura repete a cada uRep tiles); clássico: uv por tile
+  vec2 uv = uRep > 1.0 ? vWorld.xz / uRep : vLocal - vec2(t);
+  vec2 gx = dFdx(vLocal) / max(uRep, 1.0), gy = dFdy(vLocal) / max(uRep, 1.0);
+  uint kind;
+  vec3 col = matCol(m, uv, gx, gy, kind);
+  bool water = kind == 2u;
+  if (uBlend > 0.0 && kind < 2u) {
+    // suaviza a borda com os 4 vizinhos de material diferente (água e void ficam com borda dura)
+    vec2 f = vLocal - vec2(t);
+    vec4 w = vec4(1.0 - smoothstep(0.0, uBlend, f.x), smoothstep(1.0 - uBlend, 1.0, f.x),
+                  1.0 - smoothstep(0.0, uBlend, f.y), smoothstep(1.0 - uBlend, 1.0, f.y)) * 0.5;
+    ivec2 o[4] = ivec2[4](ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));
+    for (int i = 0; i < 4; i++) {
+      ivec2 tn = t + o[i];
+      if (w[i] <= 0.0 || any(lessThan(tn, ivec2(0))) || any(greaterThan(tn, ivec2(63)))) continue;
+      uint mn = texelFetch(uM, tn, 0).r;
+      if (mn == m) continue;
+      uint kn;
+      vec3 cn = matCol(mn, uv, gx, gy, kn);
+      if (kn < 2u) col = mix(col, cn, w[i]);
+    }
+  }
+  vec3 n = dot(vNormal, vNormal) > 0.0 ? normalize(vNormal) : normalize(cross(dFdx(vWorld), dFdy(vWorld)));
+  if (n.y < 0.0) n = -n;
+  vec3 lit = col * (0.55 + 0.6 * max(dot(n, uSun), 0.0));
+  if (water) {
+    vec3 v = normalize(uEye - vWorld);
+    lit += vec3(0.18) * pow(max(dot(n, normalize(v + uSun)), 0.0), 40.0);
+  }
+  float f = smoothstep(uFogRange.x, uFogRange.y, distance(uCenter, vWorld.xz));
+  outColor = vec4(mix(lit, uFog, f), 1.0);
+}`;
+
+function compile(type, src) {
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) fail('<pre>' + gl.getShaderInfoLog(s) + '</pre>');
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) fail('<pre>' + gl.getProgramInfoLog(prog) + '</pre>');
+const U = {};
+for (const n of ['uH', 'uVP', 'uOrigin', 'uZS', 'uS', 'uNb', 'uSmooth', 'uM', 'uMat', 'uT64', 'uT128', 'uEye', 'uSun', 'uFog', 'uFogRange', 'uCenter', 'uTime', 'uRep', 'uBlend'])
+  U[n] = gl.getUniformLocation(prog, n);
+const vao = gl.createVertexArray(); // sem atributos: tudo vem de gl_VertexID
+
+function intTex(w, h, ifmt, fmt, type, data) {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, ifmt, w, h, 0, fmt, type, data);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return t;
+}
+
+// TEX1: u32 magic, u16 size, u16 layers, u32 reservado, u16 RGB5_A1[layers][size][size]
+function loadTexArray(buf, repeat) {
+  const dv = new DataView(buf);
+  const size = dv.getUint16(4, true), layers = dv.getUint16(6, true);
+  const max = gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS);
+  if (layers > max) fail(`A GPU aceita ${max} camadas por texture array; o terreno precisa de ${layers}.`);
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D_ARRAY, t);
+  const n = Math.max(layers, 1);
+  const data = layers ? new Uint16Array(buf, 12, size * size * layers) : new Uint16Array(size * size);
+  gl.texImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGB5_A1, size, size, n, 0, gl.RGBA, gl.UNSIGNED_SHORT_5_5_5_1, data);
+  gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  const wrap = repeat ? gl.REPEAT : gl.CLAMP_TO_EDGE;
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, wrap);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, wrap);
+  const aniso = gl.getExtension('EXT_texture_filter_anisotropic');
+  if (aniso) gl.texParameterf(gl.TEXTURE_2D_ARRAY, aniso.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(8, gl.getParameter(aniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
+  return { t, layers };
+}
+
+// MAT1: u32 magic, u32 n, n × { u8 kind, u8 texArray, u16 texLayer, u16 artLayer, u16 landId }
+function loadMaterials(buf) {
+  const dv = new DataView(buf), n = dv.getUint32(4, true);
+  const px = new Uint16Array(n * 4);
+  for (let i = 0; i < n; i++) {
+    const o = 8 + i * 8;
+    px[i * 4] = dv.getUint8(o); px[i * 4 + 1] = dv.getUint8(o + 1);
+    px[i * 4 + 2] = dv.getUint16(o + 2, true); px[i * 4 + 3] = dv.getUint16(o + 4, true);
+  }
+  return intTex(n, 1, gl.RGBA16UI, gl.RGBA_INTEGER, gl.UNSIGNED_SHORT, px);
+}
+
+// ------------------------------------------------------------ statics
+// A art do UO é uma projeção oblíqua afim: pixel (u, v) de um ponto local (lx, ly, lz) do tile é
+//   u = 22(lx − ly) + w/2      v = 22(lx + ly) − 4·lz + h − 44
+// então qualquer face plana (parede, piso, telhado) amostra o sprite original direto.
+const S_VS = `#version 300 es
+precision highp float; precision highp int;
+layout(location = 0) in uint aA;   // x:6 y:6 z+128:8 tie:4 partialHue:1
+layout(location = 1) in uint aB;   // sprite:16 hue:16
+uniform highp usampler2D uSpr;
+uniform mat4 uVP;
+uniform vec2 uOrigin;
+uniform float uZS;
+uniform int uKind;
+uniform int uRoofs;
+out vec2 vPix;
+out vec3 vWorld;
+flat out uvec4 vRect;   // ax, ay, tw, th no atlas
+flat out uvec4 vTrim;   // tx, ty, página, hue
+flat out uint vFlags;   // bit0 partialHue
+const ivec2 Q[6] = ivec2[6](ivec2(0,0), ivec2(1,0), ivec2(0,1), ivec2(1,0), ivec2(1,1), ivec2(0,1));
+float P(uint v) { return float(int(v << 16u) >> 16) / 64.0; }
+vec2 proj(vec3 m, float w, float h) { return vec2(22.0 * (m.x - m.y) + w * 0.5, 22.0 * (m.x + m.y) - 4.0 * m.z + h - 44.0); }
+void main() {
+  float cz = float(aA >> 26);
+  if (uRoofs == 0 && uKind != 2 && cz > 0.0 && cz <= 12.0) {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    return;
+  }
+  int s = int(aB & 0xFFFFu);
+  ivec2 b = ivec2((s & 255) * 4, s >> 8);
+  uvec4 t0 = texelFetch(uSpr, b, 0), t1 = texelFetch(uSpr, b + ivec2(1, 0), 0);
+  uvec4 t2 = texelFetch(uSpr, b + ivec2(2, 0), 0), t3 = texelFetch(uSpr, b + ivec2(3, 0), 0);
+  float w = float(t1.z), h = float(t1.w);
+  vec3 tile = vec3(float(aA & 63u), float((aA >> 6) & 63u), float(int((aA >> 12) & 255u) - 128));
+  float tie = float((aA >> 20) & 15u);
+  vec2 a = vec2(Q[gl_VertexID % 6]);
+  vec3 L;
+  vFlags = (aA >> 24) & 1u;
+  if (uKind == 0) {            // caixa: topo, leste, sul, oeste, norte
+    float x0 = P(t2.z), y0 = P(t2.w), H = P(t3.x);
+    int f = gl_VertexID / 6;
+    if (f == 0)      L = vec3(mix(x0, 1.0, a.x), mix(y0, 1.0, a.y), H);
+    else if (f == 1) L = vec3(1.0, mix(y0, 1.0, a.x), H * a.y);
+    else if (f == 2) L = vec3(mix(x0, 1.0, a.x), 1.0, H * a.y);
+    else if (f == 3) L = vec3(x0, mix(y0, 1.0, a.x), H * a.y);
+    else             L = vec3(mix(x0, 1.0, a.x), y0, H * a.y);
+    vec3 M = L;                // faces oeste/norte não aparecem na art: reusam a face oposta
+    if (f == 3) M.x = 1.0;
+    if (f == 4) M.y = 1.0;
+    vPix = proj(M, w, h);
+  } else if (uKind == 1) {     // plano: deitado (pisos, água, grama) ou vertical (quadros, escudos, placas)
+    float mode = P(t3.w);
+    vec2 s = mix(vec2(P(t2.z), P(t2.w)), vec2(P(t3.x), P(t3.y)), a); // deitado: (x, y) · vertical: (s, z)
+    if (mode < 0.5)      L = vec3(s, P(t3.z));
+    else if (mode < 1.5) L = vec3(P(t3.z), s.x, s.y);   // plano x = c
+    else                 L = vec3(s.x, P(t3.z), s.y);   // plano y = c
+    vPix = proj(L, w, h);
+    if (mode < 0.5) L.z += 0.15 + tie * 0.08;
+    else if (mode < 1.5) L.x += tie * 0.01;
+    else L.y += tie * 0.01;
+  } else {                     // telhado: plano inclinado com beiral
+    float e = P(t2.z), c = P(t2.w), sx = P(t3.x), sy = P(t3.y);
+    vec2 g = mix(vec2(-e), vec2(1.0 + e), a);
+    vec3 L_tex = vec3(g, c + sx * (1.0 - g.x) + sy * (1.0 - g.y));
+    vPix = proj(L_tex, w, h);  // a textura vem do plano ajustado à art
+    if (((aA >> 25) & 1u) != 0u) {
+      // a geometria segue a inclinação do telhado montado (z dos vizinhos), mantendo a altura no
+      // centro do tile: as bordas de fileiras vizinhas se encontram, sem degraus nem buracos
+      vec2 gs = (vec2(float((aA >> 26) & 7u), float((aA >> 29) & 7u)) - 4.0) * 1.5;
+      L = vec3(g, 0.5 * (abs(gs.x) + abs(gs.y)) + dot(gs, g - 0.5));
+    } else {
+      L = vec3(g, 0.5 * (abs(sx) + abs(sy)) - sx * (g.x - 0.5) - sy * (g.y - 0.5));
+    }
+    L.z += tie * 0.08;
+  }
+  vRect = t0;
+  vTrim = uvec4(t1.xy, t2.x >> 8, (aB >> 16) & 0x3FFFu);
+  vWorld = vec3(uOrigin.x + tile.x + L.x, (tile.z + L.z) * uZS, uOrigin.y + tile.y + L.y);
+  gl_Position = uVP * vec4(vWorld, 1.0);
+}`;
+
+const S_FS = `#version 300 es
+precision highp float; precision highp int;
+uniform highp sampler2DArray uAtlas;
+uniform highp sampler2D uHues;
+uniform vec3 uSun, uFog, uEye;
+uniform vec2 uFogRange, uCenter;
+uniform float uAtlasSize;
+in vec2 vPix;
+in vec3 vWorld;
+flat in uvec4 vRect;
+flat in uvec4 vTrim;
+flat in uint vFlags;
+out vec4 outColor;
+void main() {
+  vec2 p = vPix - vec2(vTrim.xy);
+  if (p.x < 0.0 || p.y < 0.0 || p.x >= float(vRect.z) || p.y >= float(vRect.w)) discard;
+  vec4 c = texture(uAtlas, vec3((vec2(vRect.xy) + p) / uAtlasSize, float(vTrim.z)));
+  if (c.a < 0.5) discard;
+  vec3 col = c.rgb;
+  if (vTrim.w != 0u) {
+    bool gray = abs(col.r - col.g) < 0.02 && abs(col.g - col.b) < 0.02;
+    if ((vFlags & 1u) == 0u || gray)
+      col = texelFetch(uHues, ivec2(int(clamp(col.r * 31.0 + 0.5, 0.0, 31.0)), int(vTrim.w) - 1), 0).rgb;
+  }
+  vec3 n = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
+  if (dot(n, uEye - vWorld) < 0.0) n = -n;
+  float light = 0.55 + 0.6 * max(dot(n, uSun), 0.0);
+  float f = smoothstep(uFogRange.x, uFogRange.y, distance(uCenter, vWorld.xz));
+  outColor = vec4(mix(col * light, uFog, f), 1.0);
+}`;
+
+const sprog = gl.createProgram();
+gl.attachShader(sprog, compile(gl.VERTEX_SHADER, S_VS));
+gl.attachShader(sprog, compile(gl.FRAGMENT_SHADER, S_FS));
+gl.linkProgram(sprog);
+if (!gl.getProgramParameter(sprog, gl.LINK_STATUS)) fail('<pre>' + gl.getProgramInfoLog(sprog) + '</pre>');
+const SU = {};
+for (const n of ['uSpr', 'uVP', 'uOrigin', 'uZS', 'uKind', 'uRoofs', 'uAtlas', 'uHues', 'uSun', 'uFog', 'uEye', 'uFogRange', 'uCenter', 'uAtlasSize'])
+  SU[n] = gl.getUniformLocation(sprog, n);
+// ------------------------------------------------------------ casco visual (móveis, decoração, árvores, conjuntos)
+// Modelo 3D reconstruído da art: cada item é uma caixa e o fragment shader marcha o raio da câmera
+// dentro dela; um ponto é sólido quando sua projeção isométrica cai num pixel opaco do sprite.
+// Conjuntos de várias peças (fonte, mesa grande, balcão) chegam do conversor como uma art composta.
+// Da vista original do UO a imagem é idêntica à art; de outros ângulos o objeto tem volume.
+// GRP1 (conversor): conjuntos de peças = cabeçalho de 3 texels + 2 texels por peça, até GROUP_MAX peças
+const GROUP_SLOT = 76, GROUP_MAX = 36;
+const H_VS = `#version 300 es
+precision highp float; precision highp int;
+layout(location = 0) in uint aA;   // x:6 y:6 z+128:8 tie:4 partialHue:1 conjunto:1 teto:6
+layout(location = 1) in uint aB;   // sprite ou grupo:16 hue:16
+uniform highp usampler2D uSpr;
+uniform highp usampler2D uGrp;
+uniform mat4 uVP;
+uniform vec2 uOrigin;
+uniform float uZS;
+uniform int uRoofs;
+out vec3 vL;                 // ponto da face da caixa, local ao tile da âncora (x, y, z)
+flat out vec3 vT;            // origem do tile: (mundo x, z do tile, mundo y)
+flat out vec3 vLo, vHi;      // caixa local (x0, y0, z0) – (x1, y1, z1)
+flat out ivec4 vRect;        // item avulso: ax, ay, tw, th no atlas
+flat out vec3 vOrg;          // item avulso: (u0, v0) do pixel e página
+flat out ivec3 vRef;         // grupo (−1 = avulso), hue, partialHue
+const ivec2 Q[6] = ivec2[6](ivec2(0,0), ivec2(1,0), ivec2(0,1), ivec2(1,0), ivec2(1,1), ivec2(0,1));
+float P(uint v) { return float(int(v << 16u) >> 16) / 64.0; }
+void main() {
+  float cz = float(aA >> 26);
+  if (uRoofs == 0 && cz > 0.0 && cz <= 12.0) {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    return;
+  }
+  int s = int(aB & 0xFFFFu);
+  bool grp = ((aA >> 25) & 1u) != 0u;
+  if (grp) {
+    int o = s * ${GROUP_SLOT};
+    uvec4 h1 = texelFetch(uGrp, ivec2((o + 1) & 1023, (o + 1) >> 10), 0);
+    uvec4 h2 = texelFetch(uGrp, ivec2((o + 2) & 1023, (o + 2) >> 10), 0);
+    vLo = vec3(P(h1.x), P(h1.y), P(h2.x));
+    vHi = vec3(P(h1.z), P(h1.w), P(h2.y));
+  } else {
+    ivec2 b = ivec2((s & 255) * 4, s >> 8);
+    uvec4 t0 = texelFetch(uSpr, b, 0), t1 = texelFetch(uSpr, b + ivec2(1, 0), 0);
+    uvec4 t2 = texelFetch(uSpr, b + ivec2(2, 0), 0), t3 = texelFetch(uSpr, b + ivec2(3, 0), 0);
+    vLo = vec3(P(t2.z), P(t2.w), P(t3.z));
+    vHi = vec3(P(t3.x), P(t3.y), P(t3.w));
+    vRect = ivec4(t0);
+    vOrg = vec3(float(t1.z) * 0.5 - float(t1.x), float(t1.w) - 44.0 - float(t1.y), float(t2.x >> 8));
+  }
+  cz = float(aA >> 26);    // piso/telhado logo acima: o item não atravessa o andar de cima
+  if (cz > 0.0) vHi.z = max(vLo.z + 0.5, min(vHi.z, cz - 0.25));
+  vec3 tile = vec3(float(aA & 63u), float((aA >> 6) & 63u), float(int((aA >> 12) & 255u) - 128));
+  int f = gl_VertexID / 6;   // faces: topo, base, leste, oeste, sul, norte
+  vec2 q = vec2(Q[gl_VertexID % 6]);
+  vec3 u = f < 2 ? vec3(q, float(f == 0)) : f < 4 ? vec3(float(f == 2), q) : vec3(q.x, float(f == 4), q.y);
+  vL = mix(vLo, vHi, u);
+  vT = vec3(uOrigin.x + tile.x, tile.z, uOrigin.y + tile.y);
+  vRef = ivec3(grp ? s : -1, int(aB >> 16), int((aA >> 24) & 1u));
+  gl_Position = uVP * vec4(vT.x + vL.x, (vT.y + vL.z) * uZS, vT.z + vL.y, 1.0);
+}`;
+
+const H_FS = `#version 300 es
+precision highp float; precision highp int;
+uniform highp sampler2DArray uAtlas;
+uniform highp sampler2D uHues;
+uniform highp usampler2D uGrp;
+uniform mat4 uVP;
+uniform vec3 uFog, uEye;
+uniform vec2 uFogRange, uCenter;
+uniform float uZS;
+in vec3 vL;
+flat in vec3 vT;
+flat in vec3 vLo, vHi;
+flat in ivec4 vRect;
+flat in vec3 vOrg;
+flat in ivec3 vRef;
+out vec4 outColor;
+const int MAX_STEPS = 96;
+ivec2 gt(int o) { return ivec2(o & 1023, o >> 10); }
+float s16(uint v) { return float(int(v << 16u) >> 16); }
+bool texOpaque(ivec4 r, vec3 org, vec2 base, out ivec3 at) {
+  vec2 q = base + org.xy;
+  if (q.x < 0.0 || q.y < 0.0 || q.x >= float(r.z) || q.y >= float(r.w)) return false;
+  at = ivec3(r.xy + ivec2(q), int(org.z));
+  return texelFetch(uAtlas, at, 0).a > 0.5;
+}
+// pixel do atlas da peça da frente que cobre o ponto m (local à âncora); false se nenhuma
+bool hitArt(vec3 m, out ivec3 at) {
+  vec2 base = vec2(22.0 * (m.x - m.y), 22.0 * (m.x + m.y) - 4.0 * m.z);
+  if (vRef.x < 0) return texOpaque(vRect, vOrg, base, at);
+  int o = vRef.x * ${GROUP_SLOT};
+  int n = int(texelFetch(uGrp, gt(o), 0).x);
+  for (int k = 0; k < ${GROUP_MAX}; k++) {   // peças da frente para trás
+    if (k >= n) break;
+    uvec4 r = texelFetch(uGrp, gt(o + 3 + 2 * k), 0), g = texelFetch(uGrp, gt(o + 4 + 2 * k), 0);
+    if (texOpaque(ivec4(r), vec3(s16(g.x) * 0.5, s16(g.y) * 0.5, float(g.z)), base, at)) return true;
+  }
+  return false;
+}
+// casco de duas vistas: corta a extrusão em X/Y mantendo z (pernas de mesa e postes finos)
+vec3 rot180(vec3 m) { return vec3(vLo.xy + vHi.xy - m.xy, m.z); }
+bool solid(vec3 m) {
+  ivec3 at;
+  return hitArt(m, at) && hitArt(rot180(m), at);
+}
+void main() {
+  vec3 E = vec3(uEye.x - vT.x, uEye.z - vT.z, uEye.y / uZS - vT.y);  // câmera em coordenadas locais
+  vec3 D = vL - E;                                                   // t = 1 neste fragmento
+  vec3 inv = 1.0 / D, ta = (vLo - E) * inv, tb = (vHi - E) * inv;
+  vec3 tn = min(ta, tb), tf = max(ta, tb);
+  float t0 = max(max(tn.x, tn.y), max(tn.z, 0.0)), t1 = min(min(tf.x, tf.y), tf.z);
+  if (t0 > 0.0 && t0 < 0.999) discard;   // face de trás: a da frente já marcha o mesmo raio
+  // um passo por pixel da art atravessado pelo raio (nas duas vistas o percurso tem o mesmo tamanho):
+  // da vista do UO o raio fica quase num pixel só e basta pouco; de lado, cada pixel é amostrado
+  vec3 pa = E + D * t0, pb = E + D * t1;
+  vec2 dp = vec2(22.0 * ((pb.x - pa.x) - (pb.y - pa.y)), 22.0 * ((pb.x - pa.x) + (pb.y - pa.y)) - 4.0 * (pb.z - pa.z));
+  int steps = clamp(int(max(abs(dp.x), abs(dp.y))) + 2, 4, MAX_STEPS);
+  float dt = (t1 - t0) / float(steps), hit = -1.0;
+  for (int i = 0; i < MAX_STEPS; i++) {
+    if (i >= steps) break;
+    float t = t0 + (float(i) + 0.5) * dt;
+    if (solid(E + D * t)) { hit = t; break; }
+  }
+  if (hit < 0.0) discard;
+  float a = max(t0, hit - dt), b = hit;   // refina a borda de entrada
+  for (int i = 0; i < 4; i++) { float m = 0.5 * (a + b); if (solid(E + D * m)) b = m; else a = m; }
+  vec3 m = E + D * b;
+  ivec3 at;
+  if (!hitArt(m, at)) discard;
+  vec3 col = texelFetch(uAtlas, at, 0).rgb;
+  if (vRef.y != 0) {
+    bool gray = abs(col.r - col.g) < 0.02 && abs(col.g - col.b) < 0.02;
+    if (vRef.z == 0 || gray)
+      col = texelFetch(uHues, ivec2(int(clamp(col.r * 31.0 + 0.5, 0.0, 31.0)), vRef.y - 1), 0).rgb;
+  }
+  vec3 w = vec3(vT.x + m.x, (vT.y + m.z) * uZS, vT.z + m.y);
+  vec4 c = uVP * vec4(w, 1.0);
+  gl_FragDepth = clamp(c.z / c.w * 0.5 + 0.5, 0.0, 1.0);
+  float f = smoothstep(uFogRange.x, uFogRange.y, distance(uCenter, w.xz));
+  outColor = vec4(mix(col * 0.95, uFog, f), 1.0);
+}`;
+
+const hprog = gl.createProgram();
+gl.attachShader(hprog, compile(gl.VERTEX_SHADER, H_VS));
+gl.attachShader(hprog, compile(gl.FRAGMENT_SHADER, H_FS));
+gl.linkProgram(hprog);
+if (!gl.getProgramParameter(hprog, gl.LINK_STATUS)) fail('<pre>' + gl.getProgramInfoLog(hprog) + '</pre>');
+const HU = {};
+for (const n of ['uSpr', 'uGrp', 'uVP', 'uOrigin', 'uZS', 'uRoofs', 'uAtlas', 'uHues', 'uFog', 'uEye', 'uFogRange', 'uCenter'])
+  HU[n] = gl.getUniformLocation(hprog, n);
+
+const svao = gl.createVertexArray();
+gl.bindVertexArray(svao);
+for (const i of [0, 1]) { gl.enableVertexAttribArray(i); gl.vertexAttribDivisor(i, 1); }
+gl.bindVertexArray(null);
+const KIND_VERTS = [30, 6, 6, 36]; // caixa, plano, telhado, casco visual (cubo)
+const statics = { ready: false, sprTex: null, grpTex: null, atlas: null, atlasSize: 4096, hueTex: null, exists: null };
+
+// SPR1: u32 magic, u32 n, u32 linhas (múltiplo de 256), 16 × u16 por sprite → textura RGBA16UI 1024 × linhas/256
+function loadSprites(buf) {
+  const rows = new DataView(buf).getUint32(8, true);
+  return intTex(1024, rows / 256, gl.RGBA16UI, gl.RGBA_INTEGER, gl.UNSIGNED_SHORT, new Uint16Array(buf, 12, rows * 16));
+}
+// GRP1: u32 magic, u32 n, u32 linhas | u16[linhas][1024][4] → textura RGBA16UI 1024 × linhas
+function loadGroups(buf) {
+  const rows = new DataView(buf).getUint32(8, true);
+  return intTex(1024, rows, gl.RGBA16UI, gl.RGBA_INTEGER, gl.UNSIGNED_SHORT, new Uint16Array(buf, 12, rows * 4096));
+}
+// ATL1: u32 magic, u16 lado, u16 páginas, u32 reservado, u16 RGB5_A1[páginas][lado][lado]
+function loadAtlas(buf) {
+  const dv = new DataView(buf), size = dv.getUint16(4, true), pages = dv.getUint16(6, true);
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D_ARRAY, t);
+  gl.texImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.RGB5_A1, size, size, pages, 0, gl.RGBA, gl.UNSIGNED_SHORT_5_5_5_1, new Uint16Array(buf, 12, size * size * pages));
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAX_LEVEL, 2);
+  gl.generateMipmap(gl.TEXTURE_2D_ARRAY);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return { t, size };
+}
+// HUE1: u32 magic, u16 32, u16 n, u32 reservado, u16 RGB5_A1[n][32]
+function loadHues(buf) {
+  const dv = new DataView(buf), w = dv.getUint16(4, true), n = dv.getUint16(6, true);
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB5_A1, w, n, 0, gl.RGBA, gl.UNSIGNED_SHORT_5_5_5_1, new Uint16Array(buf, 12, w * n));
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  return t;
+}
+
+// STA1: header 28 B (magic, u16 cx, cy, u32 count, u32 n[4] por tipo) | u32 A[count] | u32 B[count]
+async function loadStatics(c) {
+  const buf = await getBuf(`${DATA}/map${MAP}/statics/${c.cx}_${c.cy}.bin`);
+  if (c.state === 'dead') return;
+  const dv = new DataView(buf);
+  if (dv.getUint32(0, true) !== 0x31415453) throw new Error('STA1 inválido');
+  const count = dv.getUint32(8, true);
+  const n = [0, 1, 2, 3].map((k) => dv.getUint32(12 + k * 4, true));
+  const A = new Uint32Array(buf, 28, count);
+  let zMax = -128;
+  for (let i = 0; i < count; i++) zMax = Math.max(zMax, ((A[i] >> 12) & 255) - 128);
+  c.sBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, c.sBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, buf, gl.STATIC_DRAW);
+  c.sCount = count; c.sN = n; c.sZMax = zMax + 120;
+}
+
+// ------------------------------------------------------------ chunks
+const chunks = new Map(); // key -> { state, cx, cy, hTex, mTex, heights, zMin, zMax }
+let manifest, exists, chunkZ;
+let inFlight = 0;
+const MAX_IN_FLIGHT = 8;
+
+// TRN1: header 16 B | u16 material[4096] | i8 height[66*66] (tiles -1..64; ou 1 byte se allFlat)
+// Arquivos antigos (sem flag 8) têm 65*65 (tiles 0..64): a borda -1 é copiada da linha/coluna 0.
+const HG = 66;
+function parseTRN(buf) {
+  const dv = new DataView(buf);
+  if (dv.getUint32(0, true) !== 0x314E5254) throw new Error('TRN1 inválido');
+  const zMin = dv.getInt8(8), zMax = dv.getInt8(9), flags = dv.getUint16(10, true);
+  const mat = new Uint16Array(buf, 16, 4096);
+  let heights;
+  if (flags & 2) heights = new Int8Array(HG * HG).fill(dv.getInt8(16 + 8192));
+  else if (flags & 8) heights = new Int8Array(buf, 16 + 8192, HG * HG);
+  else {
+    const old = new Int8Array(buf, 16 + 8192, 65 * 65);
+    heights = new Int8Array(HG * HG);
+    for (let j = 0; j < HG; j++)
+      for (let i = 0; i < HG; i++) heights[j * HG + i] = old[Math.max(0, j - 1) * 65 + Math.max(0, i - 1)];
+  }
+  return { zMin, zMax, mat, heights };
+}
+
+// mesma superfície do shader (surf): smoothstep bilinear entre centros de tiles
+const sstep = (f) => f * f * (3 - 2 * f);
+function surfaceZ(hg, lx, ly) {
+  const T = (i, j) => hg[Math.min(65, Math.max(0, j + 1)) * HG + Math.min(65, Math.max(0, i + 1))];
+  const gx = lx - 0.5, gy = ly - 0.5, i = Math.floor(gx), j = Math.floor(gy);
+  const sx = sstep(gx - i), sy = sstep(gy - j);
+  const top = T(i, j) + (T(i + 1, j) - T(i, j)) * sx, bot = T(i, j + 1) + (T(i + 1, j + 1) - T(i, j + 1)) * sx;
+  return top + (bot - top) * sy;
+}
+
+async function loadChunk(c) {
+  inFlight++;
+  try {
+    const buf = await getBuf(`${DATA}/map${MAP}/terrain/${c.cx}_${c.cy}.bin`);
+    if (c.state === 'dead') return;
+    const d = parseTRN(buf);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    c.hTex = intTex(HG, HG, gl.R8I, gl.RED_INTEGER, gl.BYTE, d.heights);
+    c.mTex = intTex(64, 64, gl.R16UI, gl.RED_INTEGER, gl.UNSIGNED_SHORT, d.mat);
+    c.heights = d.heights.slice();
+    c.zMin = d.zMin; c.zMax = d.zMax;
+    if (statics.ready && hasBit(statics.exists, c.cx, c.cy)) await loadStatics(c);
+    if (c.state === 'dead') { freeChunk(c); return; }
+    c.state = 'ready';
+  } catch (e) {
+    console.warn(e); c.state = 'error';
+  } finally { inFlight--; }
+}
+
+function freeChunk(c) {
+  if (c.hTex) gl.deleteTexture(c.hTex);
+  if (c.mTex) gl.deleteTexture(c.mTex);
+  if (c.sBuf) gl.deleteBuffer(c.sBuf);
+  c.hTex = c.mTex = c.sBuf = null;
+}
+
+function unload(key, c) {
+  freeChunk(c);
+  c.state = 'dead';
+  chunks.delete(key);
+}
+
+function hasBit(bits, cx, cy) {
+  if (!bits || cx < 0 || cy < 0 || cx >= manifest.chunksX || cy >= manifest.chunksY) return false;
+  const i = cy * manifest.chunksX + cx;
+  return (bits[i >> 3] >> (i & 7)) & 1;
+}
+const hasChunk = (cx, cy) => hasBit(exists, cx, cy);
+
+function updateStreaming() {
+  const ccx = Math.floor(cam.x / CH), ccy = Math.floor(cam.y / CH), R = settings.radius;
+  for (const [k, c] of chunks) if (Math.max(Math.abs(c.cx - ccx), Math.abs(c.cy - ccy)) > R + 2) unload(k, c);
+  if (inFlight >= MAX_IN_FLIGHT) return;
+  const want = [];
+  for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
+    const cx = ccx + dx, cy = ccy + dy, k = cx + ',' + cy;
+    if (!chunks.has(k) && hasChunk(cx, cy)) want.push([dx * dx + dy * dy, cx, cy, k]);
+  }
+  want.sort((a, b) => a[0] - b[0]);
+  for (const [, cx, cy, k] of want) {
+    if (inFlight >= MAX_IN_FLIGHT) break;
+    const c = { state: 'loading', cx, cy };
+    chunks.set(k, c);
+    loadChunk(c);
+  }
+}
+
+function groundZ(x, y) {
+  const c = chunks.get(Math.floor(x / CH) + ',' + Math.floor(y / CH));
+  if (!c || c.state !== 'ready') return null;
+  const lx = x - c.cx * CH, ly = y - c.cy * CH;
+  if (settings.smooth) return surfaceZ(c.heights, lx, ly);
+  const ix = Math.min(63, Math.floor(lx)), iy = Math.min(63, Math.floor(ly)), fx = lx - ix, fy = ly - iy;
+  const h = (i, j) => c.heights[(j + 1) * HG + i + 1];
+  return (h(ix, iy) * (1 - fx) + h(ix + 1, iy) * fx) * (1 - fy) + (h(ix, iy + 1) * (1 - fx) + h(ix + 1, iy + 1) * fx) * fy;
+}
+
+// subdivisões por tile conforme a distância (em chunks) até a câmera; vizinhos diferem no máximo 2x
+function chunkLod(cx, cy) {
+  if (!settings.smooth) return 1;
+  const d = Math.max(Math.abs(cx - Math.floor(cam.x / CH)), Math.abs(cy - Math.floor(cam.y / CH)));
+  return d <= 1 ? 4 : d <= 3 ? 2 : 1;
+}
+
+// ------------------------------------------------------------ câmera e controles
+const cam = { x: 1495, y: 1629, h: 0, yaw: Math.PI / 4, pitch: 0.75, dist: 70 };
+const settings = { zScale: 0.1286, radius: 6, statics: true, roofs: true, smooth: true };
+const keys = new Set();
+
+function setTarget(x, y) {
+  cam.x = Math.max(0, Math.min(manifest.width - 1, x));
+  cam.y = Math.max(0, Math.min(manifest.height - 1, y));
+}
+
+function pan(dxPix, dyPix) {
+  const s = cam.dist / canvas.clientHeight * 1.1;
+  const sx = Math.sin(cam.yaw), cx = Math.cos(cam.yaw);
+  // direita = (cos, -sin) ; tela-para-baixo no chão = (sin, cos) em (x, y) do mapa
+  setTarget(cam.x - (dxPix * cx + dyPix * sx) * s, cam.y - (-dxPix * sx + dyPix * cx) * s);
+}
+
+const pointers = new Map();
+let gesture = null;
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+canvas.addEventListener('pointerdown', (e) => {
+  canvas.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, rotate: e.button === 2 || e.ctrlKey });
+  gesture = null;
+});
+canvas.addEventListener('pointermove', (e) => {
+  const p = pointers.get(e.pointerId);
+  if (!p) return;
+  const dx = e.clientX - p.x, dy = e.clientY - p.y;
+  if (pointers.size === 1) {
+    if (p.rotate) { cam.yaw -= dx * 0.005; cam.pitch = Math.max(0.15, Math.min(1.5, cam.pitch + dy * 0.004)); }
+    else pan(dx, dy);
+  } else if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    const before = { d: Math.hypot(a.x - b.x, a.y - b.y), ang: Math.atan2(b.y - a.y, b.x - a.x) };
+    p.x = e.clientX; p.y = e.clientY;
+    const after = { d: Math.hypot(a.x - b.x, a.y - b.y), ang: Math.atan2(b.y - a.y, b.x - a.x) };
+    if (before.d > 0 && after.d > 0) cam.dist = Math.max(5, Math.min(700, cam.dist * before.d / after.d));
+    cam.yaw -= after.ang - before.ang;
+    return;
+  }
+  p.x = e.clientX; p.y = e.clientY;
+});
+for (const ev of ['pointerup', 'pointercancel']) canvas.addEventListener(ev, (e) => pointers.delete(e.pointerId));
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  cam.dist = Math.max(5, Math.min(700, cam.dist * Math.exp(e.deltaY * 0.0012)));
+}, { passive: false });
+addEventListener('keydown', (e) => { if (e.target.tagName !== 'INPUT') keys.add(e.key.toLowerCase()); });
+addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
+addEventListener('blur', () => keys.clear());
+
+function applyKeys(dt) {
+  const sp = cam.dist * 1.2 * dt * (keys.has('shift') ? 3 : 1);
+  let fx = 0, fy = 0;
+  if (keys.has('w') || keys.has('arrowup')) fy -= 1;
+  if (keys.has('s') || keys.has('arrowdown')) fy += 1;
+  if (keys.has('a') || keys.has('arrowleft')) fx -= 1;
+  if (keys.has('d') || keys.has('arrowright')) fx += 1;
+  if (fx || fy) pan(-fx * sp * canvas.clientHeight / cam.dist / 1.1, -fy * sp * canvas.clientHeight / cam.dist / 1.1);
+  if (keys.has('q')) cam.yaw += dt * 1.5;
+  if (keys.has('e')) cam.yaw -= dt * 1.5;
+}
+
+// ------------------------------------------------------------ UI
+function bindRange(id, key, fmt) {
+  const el = $(id), out = $(id + 'v');
+  el.value = settings[key]; out.textContent = fmt(settings[key]);
+  el.addEventListener('input', () => { settings[key] = +el.value; out.textContent = fmt(settings[key]); });
+}
+
+const MAP_NAMES = ['Felucca', 'Trammel', 'Ilshenar', 'Malas', 'Tokuno', 'Ter Mur'];
+
+// lista os mapas convertidos (data/maps.json, gravado pelo conversor) e troca recarregando a página com ?map=N
+async function setupMapSelect() {
+  const sel = $('map');
+  let done = [];
+  try { done = await (await fetch(`${DATA}/maps.json`, { cache: 'no-cache' })).json(); } catch (e) { /* conversor antigo: só o mapa atual */ }
+  MAP_NAMES.forEach((name, i) => {
+    const ok = done.includes(i);
+    const o = new Option(`${i} · ${name}${ok ? '' : ' (não convertido)'}`, i, false, i === MAP);
+    o.disabled = !ok && i !== MAP;
+    sel.add(o);
+  });
+  sel.addEventListener('change', () => {
+    const q = new URLSearchParams(location.search);
+    q.set('map', sel.value);
+    location.href = `${location.pathname}?${q}`;
+  });
+}
+
+function setupUI() {
+  bindRange('zs', 'zScale', (v) => v.toFixed(3));
+  bindRange('rad', 'radius', (v) => `${v} chunks · ${v * CH * 2} tiles`);
+  for (const k of ['statics', 'roofs', 'smooth']) {
+    const el = $('opt-' + k);
+    el.checked = settings[k];
+    el.addEventListener('change', () => { settings[k] = el.checked; });
+  }
+  $('opt-statics').disabled = !statics.ready;
+  $('goto').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const x = parseInt($('gx').value, 10), y = parseInt($('gy').value, 10);
+    if (Number.isFinite(x) && Number.isFinite(y)) setTarget(x, y);
+  });
+  $('title').textContent = `Britannia 3D · map${MAP}`;
+  $('miniWrap').style.aspectRatio = `${manifest.width} / ${manifest.height}`;
+  const img = $('radar');
+  img.src = `${DATA}/map${MAP}/radar.png${BUILD}`;
+  $('miniWrap').addEventListener('click', (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    setTarget((e.clientX - r.left) / r.width * manifest.width, (e.clientY - r.top) / r.height * manifest.height);
+  });
+}
+
+function updateUI(stats) {
+  const z = groundZ(cam.x, cam.y);
+  $('pos').textContent = `X ${Math.floor(cam.x)}  Y ${Math.floor(cam.y)}  Z ${z === null ? '?' : Math.round(z)}`;
+  $('stats').textContent = `${stats.fps} fps · ${stats.drawn}/${stats.ready} chunks · fila ${inFlight}\n${(stats.inst / 1000).toFixed(1)}k statics desenhados`;
+  const v = $('miniView'), w = settings.radius * 2 * CH;
+  v.style.left = (cam.x / manifest.width * 100) + '%';
+  v.style.top = (cam.y / manifest.height * 100) + '%';
+  v.style.width = (w / manifest.width * 100) + '%';
+  v.style.height = (w / manifest.height * 100) + '%';
+}
+
+// ------------------------------------------------------------ loop
+let tex64, tex128, matTex;
+const FOG = [0.62, 0.72, 0.78];
+const SUN = (() => { const v = [-0.45, 0.8, -0.25], l = Math.hypot(...v); return v.map((a) => a / l); })();
+let last = performance.now(), fpsAcc = 0, fpsN = 0, fps = 0, uiT = 0;
+
+function frame(now) {
+  const dt = Math.min(0.1, (now - last) / 1000); last = now;
+  fpsAcc += dt; fpsN++; if (fpsAcc > 0.5) { fps = Math.round(fpsN / fpsAcc); fpsAcc = 0; fpsN = 0; }
+  applyKeys(dt);
+  const gz = groundZ(cam.x, cam.y);
+  if (gz !== null) cam.h += (gz * settings.zScale - cam.h) * Math.min(1, dt * 8);
+  updateStreaming();
+
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  const w = Math.round(canvas.clientWidth * dpr), h = Math.round(canvas.clientHeight * dpr);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  gl.viewport(0, 0, w, h);
+  gl.clearColor(...FOG, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);
+
+  const target = [cam.x, cam.h, cam.y];
+  const cp = Math.cos(cam.pitch);
+  const eye = [target[0] + cam.dist * cp * Math.sin(cam.yaw), target[1] + cam.dist * Math.sin(cam.pitch), target[2] + cam.dist * cp * Math.cos(cam.yaw)];
+  const far = settings.radius * CH * 1.6 + cam.dist;
+  const proj = mat4.perspective(0.85, w / h, Math.max(0.5, cam.dist * 0.02), far);
+  const vp = mat4.mul(proj, mat4.lookAt(eye, target, [0, 1, 0]));
+  const planes = frustumPlanes(vp);
+  const fogEnd = settings.radius * CH * 0.95;
+
+  gl.useProgram(prog);
+  gl.bindVertexArray(vao);
+  gl.uniformMatrix4fv(U.uVP, false, vp);
+  gl.uniform1f(U.uZS, settings.zScale);
+  gl.uniform1i(U.uSmooth, settings.smooth ? 1 : 0);
+  gl.uniform3fv(U.uEye, eye);
+  gl.uniform3fv(U.uSun, SUN);
+  gl.uniform3fv(U.uFog, FOG);
+  gl.uniform2f(U.uFogRange, fogEnd * 0.7, fogEnd);
+  gl.uniform2f(U.uCenter, cam.x, cam.y);
+  gl.uniform1f(U.uTime, now / 1000);
+  gl.uniform1f(U.uRep, manifest.texRepeat || 1);
+  gl.uniform1f(U.uBlend, manifest.blend || 0);
+  gl.uniform1i(U.uH, 0); gl.uniform1i(U.uM, 1); gl.uniform1i(U.uMat, 2); gl.uniform1i(U.uT64, 3); gl.uniform1i(U.uT128, 4);
+  gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, matTex);
+  gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex64);
+  gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex128);
+
+  let drawn = 0, ready = 0;
+  for (const c of chunks.values()) {
+    if (c.state !== 'ready') continue;
+    ready++;
+    const x0 = c.cx * CH, y0 = c.cy * CH;
+    if (!boxVisible(planes, [x0, c.zMin * settings.zScale, y0], [x0 + CH, c.zMax * settings.zScale, y0 + CH])) continue;
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, c.hTex);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, c.mTex);
+    gl.uniform2f(U.uOrigin, x0, y0);
+    const s = chunkLod(c.cx, c.cy);
+    gl.uniform1i(U.uS, s);
+    gl.uniform4i(U.uNb, chunkLod(c.cx - 1, c.cy), chunkLod(c.cx + 1, c.cy), chunkLod(c.cx, c.cy - 1), chunkLod(c.cx, c.cy + 1));
+    gl.drawArrays(gl.TRIANGLES, 0, CH * CH * 6 * s * s);
+    drawn++;
+  }
+
+  let inst = 0;
+  if (statics.ready && settings.statics) {
+    gl.useProgram(sprog);
+    gl.bindVertexArray(svao);
+    gl.uniformMatrix4fv(SU.uVP, false, vp);
+    gl.uniform1f(SU.uZS, settings.zScale);
+    gl.uniform3fv(SU.uEye, eye);
+    gl.uniform3fv(SU.uSun, SUN);
+    gl.uniform3fv(SU.uFog, FOG);
+    gl.uniform2f(SU.uFogRange, fogEnd * 0.7, fogEnd);
+    gl.uniform2f(SU.uCenter, cam.x, cam.y);
+    gl.uniform1f(SU.uAtlasSize, statics.atlasSize);
+    gl.uniform1i(SU.uSpr, 5); gl.uniform1i(SU.uAtlas, 6); gl.uniform1i(SU.uHues, 7);
+    gl.uniform1i(SU.uRoofs, settings.roofs ? 1 : 0);
+    gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, statics.sprTex);
+    gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D_ARRAY, statics.atlas);
+    gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, statics.hueTex);
+    const vis = [];
+    for (const c of chunks.values()) {
+      if (c.state !== 'ready' || !c.sBuf) continue;
+      const x0 = c.cx * CH, y0 = c.cy * CH;
+      if (boxVisible(planes, [x0 - 7, Math.min(c.zMin, -128) * settings.zScale, y0 - 7], [x0 + CH + 2, c.sZMax * settings.zScale, y0 + CH + 2])) vis.push(c);
+    }
+    for (let k = 0; k < 4; k++) {
+      if (k === 2 && !settings.roofs) continue;
+      if (k === 3) {
+        gl.useProgram(hprog);
+        gl.uniformMatrix4fv(HU.uVP, false, vp);
+        gl.uniform1f(HU.uZS, settings.zScale);
+        gl.uniform3fv(HU.uEye, eye);
+        gl.uniform3fv(HU.uFog, FOG);
+        gl.uniform2f(HU.uFogRange, fogEnd * 0.7, fogEnd);
+        gl.uniform2f(HU.uCenter, cam.x, cam.y);
+        gl.uniform1i(HU.uRoofs, settings.roofs ? 1 : 0);
+        gl.uniform1i(HU.uSpr, 5); gl.uniform1i(HU.uAtlas, 6); gl.uniform1i(HU.uHues, 7); gl.uniform1i(HU.uGrp, 8);
+        gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, statics.grpTex);
+      } else gl.uniform1i(SU.uKind, k);
+      for (const c of vis) {
+        const n = c.sN[k];
+        if (!n) continue;
+        let start = 0;
+        for (let j = 0; j < k; j++) start += c.sN[j];
+        gl.bindBuffer(gl.ARRAY_BUFFER, c.sBuf);
+        gl.vertexAttribIPointer(0, 1, gl.UNSIGNED_INT, 0, 28 + start * 4);
+        gl.vertexAttribIPointer(1, 1, gl.UNSIGNED_INT, 0, 28 + (c.sCount + start) * 4);
+        gl.uniform2f(k === 3 ? HU.uOrigin : SU.uOrigin, c.cx * CH, c.cy * CH);
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, KIND_VERTS[k], n);
+        inst += n;
+      }
+    }
+  }
+
+  uiT += dt;
+  if (uiT > 0.1) { uiT = 0; updateUI({ fps, drawn, ready, inst }); }
+  requestAnimationFrame(frame);
+}
+
+// ------------------------------------------------------------ boot
+(async function boot() {
+  if (location.protocol === 'file:')
+    fail('Abra via servidor HTTP. Na pasta <code>map3d</code>, rode <code>python -m http.server 8080</code> e acesse <code>http://localhost:8080</code>.');
+  setupMapSelect();
+  try {
+    manifest = await (await fetch(`${DATA}/map${MAP}/manifest.json`, { cache: 'no-cache' })).json();
+  } catch (e) {
+    fail(`Dados do map${MAP} não encontrados. Gere com <code>python -I map3d/tools/convert.py --map ${MAP}</code> a partir da pasta do cliente.`);
+  }
+  BUILD = manifest.build ? `?v=${manifest.build}` : '';
+  exists = Uint8Array.from(atob(manifest.chunks), (ch) => ch.charCodeAt(0));
+  settings.zScale = manifest.zScale;
+  const [mb, b64, b128] = await Promise.all([
+    getBuf(`${DATA}/map${MAP}/materials.bin`), getBuf(`${DATA}/map${MAP}/land64.bin`), getBuf(`${DATA}/map${MAP}/land128.bin`)]);
+  matTex = loadMaterials(mb);
+  // texRepeat > 1 (Enhanced): texturas em coordenadas do mundo, precisam repetir
+  const rep = (manifest.texRepeat || 1) > 1;
+  tex64 = loadTexArray(b64, rep).t;
+  tex128 = loadTexArray(b128, rep).t;
+  if (manifest.staticsChunks) {
+    const [sb, ab, hb, gb] = await Promise.all([
+      getBuf(`${DATA}/map${MAP}/sprites.bin`), getBuf(`${DATA}/map${MAP}/atlas.bin`), getBuf(`${DATA}/hues.bin`),
+      getBuf(`${DATA}/map${MAP}/groups.bin`)]);
+    statics.sprTex = loadSprites(sb);
+    statics.grpTex = loadGroups(gb);
+    const at = loadAtlas(ab);
+    statics.atlas = at.t; statics.atlasSize = at.size;
+    statics.hueTex = loadHues(hb);
+    statics.exists = Uint8Array.from(atob(manifest.staticsChunks), (ch) => ch.charCodeAt(0));
+    statics.ready = true;
+  }
+  const m = /^#(\d+),(\d+)$/.exec(location.hash);
+  if (m) setTarget(+m[1], +m[2]); else setTarget(...manifest.start);
+  addEventListener('hashchange', () => { const h = /^#(\d+),(\d+)$/.exec(location.hash); if (h) setTarget(+h[1], +h[2]); });
+  setupUI();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

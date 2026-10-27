@@ -1,0 +1,8 @@
+data/
+out/
+assets3d/
+scratch/
+__pycache__/
+*.pyc
+node_modules/
+*.bak

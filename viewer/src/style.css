@@ -1,0 +1,342 @@
+:root {
+  --bg-dark: #0a0e0c;
+  --surface: rgba(18, 26, 23, 0.78);
+  --surface-border: rgba(108, 196, 168, 0.22);
+  --surface-hover: rgba(28, 42, 36, 0.88);
+  --accent: #5ec49e;
+  --accent-glow: rgba(94, 196, 158, 0.35);
+  --accent-gold: #e2ba64;
+  --text-main: #e8f0eb;
+  --text-muted: #8fa69c;
+  --font-serif: "Cinzel", Georgia, serif;
+  --font-sans: "Inter", -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  user-select: none;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background-color: var(--bg-dark);
+  color: var(--text-main);
+  font-family: var(--font-sans);
+  font-size: 14px;
+}
+
+#glcanvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  display: block;
+  z-index: 1;
+  cursor: grab;
+}
+
+#glcanvas:active {
+  cursor: grabbing;
+}
+
+/* Glassmorphism HUD Panels */
+.hud-panel {
+  position: absolute;
+  z-index: 10;
+  background: var(--surface);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--surface-border);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), inset 0 1px 1px rgba(255, 255, 255, 0.08);
+  padding: 14px 18px;
+  pointer-events: auto;
+}
+
+/* Top Left */
+.top-left {
+  top: 20px;
+  left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 290px;
+}
+
+.hud-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.logo-mark {
+  font-size: 26px;
+  color: var(--accent-gold);
+  text-shadow: 0 0 12px rgba(226, 186, 100, 0.4);
+}
+
+.hud-brand h1 {
+  font-family: var(--font-serif);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #f4faf6;
+}
+
+.subtitle {
+  font-size: 11.5px;
+  color: var(--accent);
+  letter-spacing: 0.03em;
+  font-weight: 500;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.stat-pill {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: rgba(0, 0, 0, 0.35);
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.stat-pill .lbl {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  letter-spacing: 0.05em;
+}
+
+.stat-pill b {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: #ffffff;
+}
+
+/* Top Right Minimap */
+.minimap-panel {
+  top: 20px;
+  right: 20px;
+  width: 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+
+.panel-header {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  font-weight: 600;
+  text-align: center;
+}
+
+.minimap-container {
+  position: relative;
+  width: 176px;
+  height: 176px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--surface-border);
+  background: #000;
+  cursor: crosshair;
+}
+
+#minimap-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+#minimap-indicator {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #ffdd44;
+  background: rgba(255, 221, 68, 0.3);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  box-shadow: 0 0 8px #ffdd44;
+}
+
+.teleport-presets {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+}
+
+.preset-btn {
+  background: rgba(0, 0, 0, 0.4);
+  color: var(--text-muted);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  font-size: 10.5px;
+  padding: 5px 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: var(--font-sans);
+}
+
+.preset-btn:hover {
+  color: #fff;
+  border-color: var(--accent);
+  background: rgba(94, 196, 158, 0.15);
+}
+
+/* Bottom Center Dock */
+.bottom-center {
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 10px 20px;
+}
+
+.control-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.grp-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  letter-spacing: 0.06em;
+}
+
+.toggle-buttons {
+  display: flex;
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 7px;
+  padding: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn:hover {
+  color: #fff;
+}
+
+.btn.active {
+  background: var(--accent);
+  color: #0d1612;
+  font-weight: 600;
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-main);
+  cursor: pointer;
+}
+
+.checkbox-label input {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.zoom-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.icon-btn {
+  width: 26px;
+  height: 26px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #fff;
+  border-radius: 6px;
+  font-size: 15px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+
+.icon-btn:hover {
+  background: rgba(94, 196, 158, 0.3);
+  border-color: var(--accent);
+}
+
+#zoom-slider {
+  width: 80px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* Bottom Left Tips */
+.bottom-left {
+  bottom: 24px;
+  left: 20px;
+  padding: 8px 14px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  border-radius: 8px;
+}
+
+.bottom-left b {
+  color: #d8e5df;
+}
+
+/* Responsive */
+@media (max-width: 850px) {
+  .control-dock {
+    flex-direction: column;
+    bottom: 12px;
+    gap: 8px;
+  }
+  .top-left {
+    top: 10px;
+    left: 10px;
+    min-width: 220px;
+  }
+  .minimap-panel {
+    top: 10px;
+    right: 10px;
+    width: 150px;
+  }
+  .minimap-container {
+    width: 126px;
+    height: 126px;
+  }
+}

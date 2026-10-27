@@ -1,0 +1,18 @@
+{
+  "name": "uofiddler-map3d",
+  "version": "1.0.0",
+  "description": "UO Fiddler Map 3D Web Viewer",
+  "main": "index.html",
+  "scripts": {
+    "start": "npx serve .",
+    "dev": "npx serve . -l 3000",
+    "serve": "npx http-server -p 8080 -c-1 ."
+  },
+  "keywords": [
+    "ultima-online",
+    "map3d",
+    "threejs"
+  ],
+  "author": "",
+  "license": "ISC"
+}
