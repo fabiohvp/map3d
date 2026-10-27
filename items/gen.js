@@ -113,6 +113,10 @@ const ARCH = {
   },
   bridge(c) {
     const g = new THREE.Group(), m = M('wood', c.c0);
+    if (!has(c.n, /bridge|rail/)) {   // tabuas de piso/passadico: so as tabuas
+      for (let i = 0; i < 5; i++) box(g, 1, .07, .19, M('wood', shade(c.c0, .9 + (i % 2) * .15)), 0, 0, -.4 + i * .2);
+      return g;
+    }
     box(g, 1, .08, 1, m, 0, 0, 0);
     for (const x of [-.46, .46]) { box(g, .07, .7, .07, m, x, 0, -.45); box(g, .07, .7, .07, m, x, 0, .45); box(g, .05, .06, 1, m, x, .55, 0); }
     return g;
@@ -684,19 +688,195 @@ const NOT_PLANT = /bottle|potion|flask|crystal|wine|armor|kilt|chest|sail|ship|w
 
 // escolhe a classe final: a imagem manda quando concorda com o nome/categoria ou quando tem muita confianca
 function pickLabel(it) {
+  if (it.cat === 'architecture' && ARCH[it.sub]) return null;   // construcao: nome/subtipo mandam, a imagem so atrapalha (parede virava coluna)
   if (/book ?case|book ?shelf/i.test(it.name || '')) return 'bookcase';
   const top = it.cl && it.cl[0], cat = it.cat;
   const p = top ? top[1] : 0, lab = top ? top[0] : null, lc = lab && LABEL_CAT[lab];
   if (lab && p >= .3) {
     if (lc === cat) return lab;                                   // imagem e nome concordam: refina o subtipo
     if (STRUCT.has(cat)) { if (STRUCT.has(lc) && p >= .45) return lab; }       // construcao: so troca por outra construcao
-    else if (WEAK.has(cat) || p >= .6) { if (!STRUCT.has(lc) || p >= .6) return lab; }
+    else if (WEAK.has(cat) || p >= .85) { if (!STRUCT.has(lc) || p >= .85) return lab; }   // categoria do nome so cede a imagem com muita certeza
     else if (lc !== cat && it.sub === 'misc' && p >= .4) return lab;
   }
   // verde dominante na imagem: planta, mesmo que o nome diga outra coisa
   const gr = it.f && it.f.gr;
   if (gr > .45 && cat !== 'vegetation' && cat !== 'terrain' && !NOT_PLANT.test((it.name || '').toLowerCase())) return 'bush';
   if (cat === 'furniture' && lab === 'bookcase' && p >= .2) return lab;
+  return null;
+}
+
+// ---------------------------------------------------------------- pecas feitas a mao por nome (pegam antes da classificacao pela imagem)
+function clothPlane(w, h, mat, y) {
+  const geo = new THREE.PlaneGeometry(w, h, 12, 8), p = geo.attributes.position;
+  for (let i = 0; i < p.count; i++) p.setZ(i, Math.sin(p.getX(i) * 11) * .025);
+  geo.computeVertexNormals();
+  return place(new THREE.Mesh(geo, mat), 0, y, 0);
+}
+function hanging(c) {
+  const g = new THREE.Group(), w = Math.min(1.4, Math.max(.4, c.fw)), h = Math.min(1.8, Math.max(.6, c.H));
+  const wd = M('wood', '#5b3b22');
+  g.add(clothPlane(w, h, M('fabric', c.c0, { side: THREE.DoubleSide }), h / 2 + .35));
+  box(g, w + .12, .05, .05, wd, 0, h + .35, 0);
+  g.add(place(new THREE.Mesh(new THREE.PlaneGeometry(w, .08), M('fabric', c.c1, { side: THREE.DoubleSide })), 0, .4, .01));
+  for (const s of [-1, 1]) sphere(g, .035, M('metal', '#d4af37', { rough: .3 }), s * (w / 2 + .07), h + .375, 0);
+  return g;
+}
+function painting(c) {
+  const g = new THREE.Group(), w = Math.min(1.1, Math.max(.4, c.fw)), h = Math.min(1.2, Math.max(.4, c.H * .9));
+  const wd = M('wood', c.c0);
+  box(g, w + .12, .06, .05, wd, 0, .3 + h, 0); box(g, w + .12, .06, .05, wd, 0, .24, 0);
+  box(g, .06, h, .05, wd, -w / 2 - .03, .3, 0); box(g, .06, h, .05, wd, w / 2 + .03, .3, 0);
+  g.add(place(new THREE.Mesh(new THREE.PlaneGeometry(w, h), M('plain', c.c1)), 0, .3 + h / 2, 0));
+  g.add(place(new THREE.Mesh(new THREE.PlaneGeometry(w * .5, h * .4), M('plain', c.c2)), -w * .12, .3 + h * .35, .003));
+  g.add(place(new THREE.Mesh(new THREE.CircleGeometry(Math.min(w, h) * .14, 18), M('plain', c.light)), w * .2, .3 + h * .7, .004));
+  return g;
+}
+function telescope(c) {
+  const g = new THREE.Group(), br = M('metal', '#b08a3a', { rough: .3 }), wd = M('wood', c.c0);
+  for (let i = 0; i < 3; i++) {
+    const a = i * 2.094;
+    box(g, .05, .75, .05, wd, Math.cos(a) * .14, 0, Math.sin(a) * .14).children.at(-1).rotation.set(Math.sin(a) * .22, 0, -Math.cos(a) * .22);
+  }
+  const t = place(new THREE.Mesh(new THREE.CylinderGeometry(.06, .08, .9, 14), br), .1, .95, 0); t.rotation.z = 1.05; g.add(t);
+  const t2 = place(new THREE.Mesh(new THREE.CylinderGeometry(.09, .09, .06, 14), br), .46, 1.1, 0); t2.rotation.z = 1.05; g.add(t2);
+  return g;
+}
+function skeleton(c) {
+  const g = new THREE.Group(), b = M('plain', '#e6dfc8', { rough: .7 });
+  sphere(g, .09, b, -.3, .1, 0);
+  for (let i = 0; i < 5; i++) { const r = place(new THREE.Mesh(new THREE.TorusGeometry(.1, .012, 5, 14, Math.PI), b), -.12 + i * .06, .1, 0); r.rotation.set(0, 1.57, 0); g.add(r); }
+  const sp = place(new THREE.Mesh(new THREE.CylinderGeometry(.015, .015, .5, 6), b), -.04, .04, 0); sp.rotation.z = 1.57; g.add(sp);
+  for (const [x, z, a] of [[.3, .1, .4], [.3, -.1, -.4], [-.15, .22, 1.2], [-.15, -.22, -1.2]]) {
+    const l = place(new THREE.Mesh(new THREE.CylinderGeometry(.015, .015, .32, 6), b), x, .03, z); l.rotation.z = 1.57; l.rotation.y = a; g.add(l);
+  }
+  return g;
+}
+function corpse(c) {
+  const g = new THREE.Group(), f = M('fabric', c.c0), sk = M('plain', '#c9a07a', { rough: .8 });
+  soft(g, .32, .14, .6, .06, f, 0, 0, 0); sphere(g, .09, sk, 0, .12, -.38);
+  for (const s of [-1, 1]) { soft(g, .08, .08, .36, .03, M('fabric', c.c1), s * .1, 0, .46); soft(g, .07, .07, .3, .03, f, s * .22, 0, -.05); }
+  return g;
+}
+function lighthouse(c) {
+  const g = new THREE.Group(), st = M('stone', '#e8e4da'), red = M('stone', '#a13a30');
+  lathe(g, [[.001, 0], [.48, 0], [.4, 1.1], [.38, 1.6], [.3, 2.8], [.001, 2.8]], st, 0, 0, 0, 24);
+  for (const [y0, y1, r0, r1] of [[.5, .9, .44, .41], [1.4, 1.8, .38, .36], [2.1, 2.5, .34, .31]]) lathe(g, [[r0, y0], [r1, y1], [r1 - .01, y1], [r0 - .01, y0]], red, 0, 0, 0, 24);
+  box(g, .8, .06, .8, red, 0, 2.8, 0);
+  lathe(g, [[.2, 2.86], [.2, 3.3], [.16, 3.3], [.16, 2.86]], M('plain', '#ffe9a0', { emissive: '#ffcf60', ei: 1.2, opacity: .9 }), 0, 0, 0, 14);
+  g.add(place(new THREE.Mesh(new THREE.ConeGeometry(.28, .3, 14), red), 0, 3.45, 0));
+  return g;
+}
+function gravestone(c) {
+  const g = new THREE.Group(), st = M('stone', c.c0);
+  box(g, .42, .55, .09, st, 0, 0, 0);
+  const t = place(new THREE.Mesh(new THREE.CylinderGeometry(.21, .21, .09, 18, 1, false, 0, Math.PI), st), 0, .55, 0); t.rotation.x = Math.PI / 2; g.add(t);
+  box(g, .5, .08, .26, st, 0, 0, 0);
+  return g;
+}
+function grave(c) {
+  const g = new THREE.Group(), st = M('stone', c.c0);
+  const mound = place(new THREE.Mesh(new THREE.SphereGeometry(.4, 16, 8, 0, 6.28, 0, 1.2), M('noisy', '#5a4630')), 0, 0, .2); mound.scale.set(.7, .35, 1.4); g.add(mound);
+  box(g, .36, .45, .07, st, 0, 0, -.5);
+  return g;
+}
+function moongate(c) {
+  const g = new THREE.Group(), st = M('stone', '#8a8f9a');
+  g.add(place(new THREE.Mesh(new THREE.TorusGeometry(.5, .06, 10, 32), st), 0, .6, 0));
+  g.add(place(new THREE.Mesh(new THREE.CircleGeometry(.5, 32), M('plain', c.c1, { emissive: c.c1, ei: 1, opacity: .7 })), 0, .6, 0));
+  box(g, .8, .06, .25, st, 0, 0, 0);
+  return g;
+}
+function shipBow(c) {
+  const g = new THREE.Group(), wd = M('wood', c.c0);
+  for (let i = 0; i < 5; i++) { const r = place(new THREE.Mesh(new THREE.TorusGeometry(.5 - i * .06, .03, 5, 14, Math.PI * .9), wd), 0, .1, -.4 + i * .22); r.rotation.set(0, 0, Math.PI * .05); g.add(r); }
+  box(g, .08, .08, 1.1, wd, 0, .02, 0);
+  box(g, .06, .8, .06, wd, 0, .05, -.5).children.at(-1).rotation.x = .5;
+  for (const s of [-1, 1]) for (let j = 0; j < 3; j++) box(g, .03, .06, .55, wd, s * (.3 - j * .02), .15 + j * .15, -.1);
+  return g;
+}
+function tiller(c) { const g = new THREE.Group(), wd = M('wood', c.c0); box(g, .08, .1, .9, wd, 0, .25, 0); sphere(g, .06, M('metal', '#b08a3a'), 0, .3, .45); box(g, .12, .3, .12, wd, 0, 0, -.35); return g; }
+function prow(c) {
+  const g = new THREE.Group(), wd = M('wood', c.c0);
+  lathe(g, [[.001, 0], [.2, 0], [.14, .4], [.18, .8], [.1, 1.1], [.001, 1.1]], wd, 0, 0, 0, 14);
+  const h = place(new THREE.Mesh(new THREE.ConeGeometry(.1, .35, 8), wd), 0, 1.15, .2); h.rotation.x = 1.2; g.add(h);
+  for (const s of [-1, 1]) sphere(g, .03, M('plain', '#e03a2a', { emissive: '#c02010', ei: .8 }), s * .06, 1.2, .1);
+  return g;
+}
+function web(c) {
+  const g = new THREE.Group(), m = M('plain', '#e8e8e8', { opacity: .6 });
+  for (let i = 0; i < 8; i++) {
+    const a = i * Math.PI / 4, l = place(new THREE.Mesh(new THREE.CylinderGeometry(.004, .004, .5, 4), m), Math.cos(a) * .25, .55 + Math.sin(a) * .25, 0);
+    l.rotation.z = a - Math.PI / 2; g.add(l);
+  }
+  for (const r of [.15, .3]) g.add(place(new THREE.Mesh(new THREE.TorusGeometry(r, .004, 4, 16), m), 0, .55, 0));
+  return g;
+}
+function magicRing(c) {
+  const g = new THREE.Group(), em = M('plain', c.c1, { emissive: c.c1, ei: .9 });
+  const r = place(new THREE.Mesh(new THREE.TorusGeometry(.42, .015, 6, 40), em), 0, .02, 0); r.rotation.x = Math.PI / 2; g.add(r);
+  const r2 = place(new THREE.Mesh(new THREE.TorusGeometry(.3, .012, 6, 5), em), 0, .02, 0); r2.rotation.x = Math.PI / 2; g.add(r2);
+  const d = place(new THREE.Mesh(new THREE.CircleGeometry(.4, 30), M('plain', c.c0, { opacity: .35 })), 0, .01, 0); d.rotation.x = -Math.PI / 2; g.add(d);
+  return g;
+}
+function sinkhole(c) {
+  const g = new THREE.Group();
+  lathe(g, [[.5, 0], [.5, .05], [.3, .02], [.001, -.15]], M('noisy', '#3a2a1a'), 0, .06, 0, 20);
+  const d = place(new THREE.Mesh(new THREE.CircleGeometry(.3, 20), M('plain', '#0a0806')), 0, .04, 0); d.rotation.x = -Math.PI / 2; g.add(d);
+  return g;
+}
+function treasure(c) {
+  const g = CONT.chest({ ...c, c0: '#6b4423' });
+  for (let i = 0; i < 9; i++) sphere(g, .045, M('metal', '#e0b93a', { rough: .25 }), (c.r() - .5) * .5 + .45, .03 + c.r() * .05, (c.r() - .5) * .5);
+  return g;
+}
+function refuse(c) {
+  const g = new THREE.Group();
+  for (let i = 0; i < 9; i++) {
+    soft(g, .1 + c.r() * .15, .05 + c.r() * .08, .1 + c.r() * .15, .02, M(i % 2 ? 'fabric' : 'noisy', i % 3 ? c.c0 : c.c2), (c.r() - .5) * .5, c.r() * .1, (c.r() - .5) * .5);
+    g.children.at(-1).rotation.y = c.r() * 3;
+  }
+  return g;
+}
+function stain(c) { const g = new THREE.Group(), d = place(new THREE.Mesh(new THREE.CircleGeometry(.3, 14), M('plain', c.c0, { rough: .4 })), 0, .012, 0); d.rotation.x = -Math.PI / 2; d.scale.set(1, 1 + c.r() * .5, 1); g.add(d); return g; }
+function marker(c) { const g = new THREE.Group(); box(g, .9, .03, .9, M('plain', c.c0, { rough: .8 }), 0, 0, 0); box(g, .2, .045, .2, M('plain', c.light), 0, 0, 0); return g; }
+function rugRound(c) { const g = new THREE.Group(); lathe(g, [[.001, .03], [.5, .03], [.5, .0], [.001, 0]], M('fabric', c.c0), 0, 0, 0, 24); lathe(g, [[.001, .035], [.35, .035], [.35, .03]], M('fabric', c.c1), 0, 0, 0, 24); return g; }
+function pelt(c) { const g = new THREE.Group(), m = M('fabric', c.c0); soft(g, .6, .04, .9, .02, m, 0, 0, 0); sphere(g, .12, m, 0, .03, -.55); for (const [x, z] of [[-.35, -.3], [.35, -.3], [-.35, .3], [.35, .3]]) sphere(g, .09, m, x, .02, z); return g; }
+function glowFlat(c) { const g = new THREE.Group(), d = place(new THREE.Mesh(new THREE.CircleGeometry(.4, 20), M('plain', c.c1, { emissive: c.c1, ei: .7, opacity: .5 })), 0, .02, 0); d.rotation.x = -Math.PI / 2; g.add(d); return g; }
+function glowOrb(c) { const g = new THREE.Group(); sphere(g, .18, M('plain', c.c1, { emissive: c.c1, ei: 1, opacity: .75 }), 0, .3, 0); return g; }
+
+// regras por nome: a primeira que casa vence (so valem fora de arquitetura basica: piso, parede, escada...)
+const BY_NAME = [
+  [/telescope/, telescope], [/\bskeleton\b|\bbones?\b|\bskull/, skeleton], [/^body$|\bcorpse\b/, corpse], [/lighthouse/, lighthouse],
+  [/gravestone|headstone|tombstone/, gravestone], [/\bgrave\b/, grave], [/moongate/, moongate],
+  [/shipwreck/, shipBow], [/tiller/, tiller], [/dragon prow|\bprow\b/, prow], [/\bfountain\b/, c => fountain(c)],
+  [/bearskin|\bpelt\b/, pelt], [/round rug/, rugRound], [/\brug\b|carpet/, c => DECO.rug(c)],
+  [/banner|tapestry|curtain|\bflag\b|drape/, hanging], [/painting|portrait|picture/, painting],
+  [/\bweb\b|cobweb/, web], [/pentagram|arcanecircle|arcane circle|exodus|\bcircle\b|\brune/, magicRing],
+  [/sinkhole/, sinkhole], [/treasure/, treasure], [/refuse|trash|garbage|rubble|debris/, refuse], [/stain|blood|puddle|splat/, stain],
+  [/nodraw|\bqc corner|marker/, marker],
+  [/suspension bridge|rope bridge/, c => ARCH.bridge(c)], [/roof/, c => ARCH.roof(c)],
+  [/\barch\b/, c => ARCH.arch(c)], [/\bdoor\b/, c => ARCH.door(c)],
+  [/field of|\bfield\b|vortex|sparkle|energy|glow/, glowFlat], [/bees|swarm|firefly|wisp/, glowOrb],
+  [/sandstone|\brocks?\b|boulder/, c => ROCK.boulder(c)], [/^wood$|\bwood\b|plank/, c => logs(c)], [/\bship\b|ship model/, c => SHIP.hull(c)],
+];
+// nomes de pecas que a classificacao marcou como efeito/decalque/desconhecido
+const LOOSE = [
+  [/\bwall\b|\bbeam\b|\bbricks?\b|\bpost\b/, c => ARCH.wall(c)], [/\btable\b|\bdisplay\b|\bcase\b/, c => FURN.table(c)], [/\bbed\b|pillow|blanket|sheets?|\bsleeping/, c => FURN.bed(c)],
+  [/chair|\bbench\b|stool/, c => FURN.chair(c)], [/basket/, c => CONT.basket ? CONT.basket(c) : basket(c)], [/\bpot\b|cauldron/, c => tool({ ...c, n: 'pot ' + c.n })],
+  [/statue|gargoyle|\bhead\b|knight|melisande|trophy/, c => DECO.statue(c)], [/gate|bars?\b|fence|rail/, c => ARCH.fence(c)],
+  [/torch|sconce|\blamp/, c => LIGHT.torch(c)], [/rack|weapons|sword|shelf/, c => FURN.shelf(c)], [/crystal/, c => ROCK.crystal(c)],
+  [/sarcophagus|coffin|\btomb/, c => CONT.chest({ ...c, c0: '#8a8f9a' })], [/spike|trap|switch|lever/, c => spikes(c)],
+  [/sign(post)?\b/, c => signpost(c)], [/tree|cloud|flower|plant|bush/, c => VEG.bush(c)], [/crack|footprint|patch|spilled|flour|shadow/, stain],
+  [/design|floor|rug|carpet|tile/, c => ARCH.floor(c)],
+];
+function byLoose(c) { for (const [rx, fn] of LOOSE) if (rx.test(c.n)) return fn(c); return null; }
+function spikes(c) { const g = new THREE.Group(), m = M('metal', '#8d939a'); box(g, .9, .04, .9, M('stone', c.c0), 0, 0, 0); for (let i = 0; i < 9; i++) g.add(place(new THREE.Mesh(new THREE.ConeGeometry(.04, .25, 5), m), -.3 + (i % 3) * .3, .16, -.3 + Math.floor(i / 3) * .3)); return g; }
+function signpost(c) { const g = new THREE.Group(), wd = M('wood', c.c0); box(g, .08, 1.3, .08, wd, 0, 0, 0); box(g, .6, .3, .05, wd, .15, .85, 0); return g; }
+const BASIC = new Set(['floor', 'wall', 'stairs', 'column', 'window', 'fence']);
+function byName(it, c) {
+  if (it.cat === 'architecture' && ARCH[it.sub] && !/lighthouse|fountain|moongate|shipwreck|banner|tapestry|curtain|painting|web|telescope/.test(c.n)) return null;
+  for (const [rx, fn] of BY_NAME) if (rx.test(c.n)) return fn(c);
+  if (it.cat === 'effect' || it.cat === 'unknown') return byLoose(c);
   return null;
 }
 
@@ -724,6 +904,7 @@ function buildOneInner(it, spriteTex) {
   if (tk) return templated(it, tk);
   if (MODE === 'fiel' && spriteTex && hasHull(it)) return hullModel(it, spriteTex);
   const c = ctx(it);
+  try { const byn = byName(it, c); if (byn) return byn; } catch (e) { console.warn('byName falhou', it.hex, it.name, e); }
   const cat = it.cat, sub = it.sub;
   let g;
   try {
@@ -731,11 +912,8 @@ function buildOneInner(it, spriteTex) {
     if (lab && FLAT_CARD.has(lab)) {
       const w = Math.max(.2, it.w / 44);
       if (lab === 'fire') { g = new THREE.Group(); g.add(place(new THREE.Mesh(new THREE.ConeGeometry(.2, .6, 10), M('plain', '#ffb030', { emissive: '#ff7a10', ei: 1.4 })), 0, .3, 0)); return g; }
-      if (lab === 'painting' || lab === 'sign') return spriteCard(it, spriteTex, w, Math.max(.2, it.hp / 44), .2);
-      g = new THREE.Group();
-      const fm = new THREE.MeshStandardMaterial({ map: spriteTex, transparent: true, alphaTest: .3, side: THREE.DoubleSide, roughness: 1 });
-      const fp = place(new THREE.Mesh(new THREE.PlaneGeometry(w, w * it.hp / it.w), fm), 0, .01, 0); fp.rotation.x = -Math.PI / 2; g.add(fp);
-      return g;
+      if (lab === 'painting' || lab === 'sign') return painting(c);
+      return lab === 'blood' ? stain(c) : glowFlat(c);
     }
     if (lab && BY_LABEL[lab]) return BY_LABEL[lab](c);
     const fn = (TABLE[cat] && TABLE[cat][sub]) || CAT_FALLBACK[cat];
@@ -743,7 +921,7 @@ function buildOneInner(it, spriteTex) {
     else if (has(c.n, /\b(cannon|iron|stone) ?balls?\b|\bshot\b/)) {
       g = new THREE.Group();
       for (let i = 0; i < 4; i++) sphere(g, .1, M('metal', '#3a3d42', { rough: .5 }), (i % 2 - .5) * .2 + (i > 1 ? .1 : 0), .1 + (i > 1 ? .15 : 0), (i > 1 ? 0 : .05));
-    } else if (cat === 'decoration' && (sub === 'painting' || sub === 'web')) g = spriteCard(it, spriteTex, Math.max(.2, it.w / 44), Math.max(.2, it.hp / 44), .2);
+    } else if (cat === 'decoration' && (sub === 'painting' || sub === 'web')) g = painting(c);
     else if (fn) g = fn(c);
     else if (cat === 'effect' || cat === 'unknown') {
       const w = Math.max(.2, it.w / 44), h = Math.max(.2, it.hp / 44);
@@ -751,12 +929,9 @@ function buildOneInner(it, spriteTex) {
         g = new THREE.Group();
         g.add(place(new THREE.Mesh(new THREE.ConeGeometry(.2, .6, 10), M('plain', '#ffb030', { emissive: '#ff7a10', ei: 1.4 })), 0, .3, 0));
       } else if (sub === 'decal' || sub === 'marker' || sub === 'field') {
-        g = new THREE.Group();
-        const m = new THREE.MeshStandardMaterial({ map: spriteTex, transparent: true, alphaTest: .3, side: THREE.DoubleSide, roughness: 1 });
-        const p = place(new THREE.Mesh(new THREE.PlaneGeometry(w, w * it.hp / it.w), m), 0, .01, 0);
-        p.rotation.x = -Math.PI / 2; g.add(p);
-      } else g = spriteCard(it, spriteTex, w, h);
-    } else g = spriteCard(it, spriteTex, Math.max(.2, it.w / 44), Math.max(.2, it.hp / 44));
+        g = byLoose(c) || stain(c);
+      } else g = marker(c);
+    } else g = genericBlock(c);
   } catch (e) {
     console.warn('builder falhou', it.hex, it.name, e);
     g = genericBlock(c);
@@ -780,7 +955,7 @@ export function buildSet(st, itemOf, spriteTexOf) {
 
 // ---------------------------------------------------------------- modelo fiel a art (malha do conversor + sprite modernizado)
 let MESH = null;
-export let MODE = 'fiel';
+export let MODE = 'proc';
 export function setMeshes(index, buf) { MESH = { index, buf }; }
 export function setMode(m) { MODE = m; }
 export function hasHull(it) { return !!(MESH && MESH.index[it.hex]); }

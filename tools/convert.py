@@ -1535,6 +1535,34 @@ def fountain_groups(src, gx, gy, z, sid, snames):
     return out
 
 
+ITEMS_DATA = os.path.normpath(os.path.join(HERE, '..', 'items', 'data'))
+
+
+def load_item_meshes(path=ITEMS_DATA):
+    """Malhas geradas por items/mesh.py (items/data/meshes.bin + meshes.json) -> {id: (P, px, n)} em triângulos soltos,
+    no mesmo referencial do sprite_mesh (lx, ly em tiles, lz em z do UO, px em pixels da art)."""
+    jp, bp = os.path.join(path, 'meshes.json'), os.path.join(path, 'meshes.bin')
+    if not (os.path.exists(jp) and os.path.exists(bp)):
+        sys.exit(f'malhas dos itens não encontradas em {path}: rode npm run generate:items')
+    index = json.load(open(jp))
+    blob = open(bp, 'rb').read()
+    zs = 0.144   # ZS de items/mesh.py
+    out = {}
+    for hx, e in index.items():
+        o, nv, nt = e['o'], e['nv'], e['nt']
+        pos = np.frombuffer(blob, '<f4', nv * 3, o).reshape(nv, 3)
+        o += nv * 12
+        uv = np.frombuffer(blob, '<u2', nv * 2, o).reshape(nv, 2)
+        o += nv * 4
+        nrm = np.frombuffer(blob, 'i1', nv * 4, o).reshape(nv, 4)
+        o += nv * 4
+        idx = np.frombuffer(blob, '<u4', nt * 3, o)
+        P = np.stack([pos[:, 0] + 0.5, pos[:, 2] + 0.5, pos[:, 1] / zs], 1).astype(np.float64)
+        N = np.stack([nrm[:, 0], nrm[:, 2], nrm[:, 1]], 1).astype(np.float64) / 127.0
+        out[int(hx, 16)] = (P[idx], uv[idx].astype(np.float64) / 16.0, N[idx])
+    return out
+
+
 def build_statics(src, n, W, H, out_map):
     print('lendo statics...')
     sflags, sheight, snodraw, snames = src.static_tiledata()
@@ -1563,6 +1591,7 @@ def build_statics(src, n, W, H, out_map):
     sprites, imgs, meshes = {}, {}, {}
     engines = {}
     fountain = fountain_groups(src, gx, gy, z, sid, snames)
+    item_meshes = load_item_meshes()
     for s in np.unique(sid).tolist():
         img = src.static_art(s)
         if img is None or not img.any():
@@ -1583,18 +1612,13 @@ def build_statics(src, n, W, H, out_map):
                 sprites[s] = (SK_SLOPE, (e, c, sx, sy, 0, 0))
                 engines['telhado'] = engines.get('telhado', 0) + 1
                 continue
-        mask = img != 0
-        x0, y0, x1, y1 = _bbox(mask)
-        area = int(mask.sum())
-        cat, sub = categorize(tx, snames[s] if s < len(snames) else '', int(sflags[s]), area,
-                              area / ((x1 - x0) * (y1 - y0)))
-        if cat == 'unknown' and sheight[s] <= 1 and floor_iou(mask) >= 0.85:
-            cat, sub = 'architecture', 'floor'  # losango de chão sem nome conhecido (placas das virtudes)
-        eng, mesh = sprite_mesh(img, tx, cat, sub, snames[s] if s < len(snames) else '', int(sheight[s]),
-                                bool(int(sflags[s]) & SF_SURFACE))
-        meshes[s] = mesh
+        if s not in item_meshes:   # sem malha em items/data (rode npm run generate:items): fica sem desenhar
+            del imgs[s]
+            engines['sem malha'] = engines.get('sem malha', 0) + 1
+            continue
+        meshes[s] = item_meshes[s]
         sprites[s] = (SK_MESH, None)
-        engines[eng] = engines.get(eng, 0) + 1
+        engines['items'] = engines.get('items', 0) + 1
     print('  ' + ', '.join(f'{k} {v}' for k, v in sorted(engines.items())))
     mfirst, mtotal = write_meshes(os.path.join(out_map, 'meshes.bin'), meshes)
     print(f'  malhas: {mtotal} vértices ({mtotal * 16 / 1e6:.1f} MB)')
