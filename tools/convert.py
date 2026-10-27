@@ -1301,17 +1301,43 @@ def rail_mesh(mask, snap=None, plane=False, max_err=1.5, foot=None):
 
 
 def rail_parts(mask, min_px=8):
-    """Moldura de vitrine (barras + pino): cada barra reta vira um plano de trilho e o pino dá o pé (altura)."""
+    """Moldura de vitrine (barras + pino): cada barra reta é um trilho de 1 tile sobre a borda do tile.
+    \ (desce à direita) fica no plano ly = c, / no plano lx = c; c sai da extensão horizontal da barra
+    (ela cobre exatamente lx ou ly de 0 a 1) e a altura vem da projeção do pixel."""
+    h, w = mask.shape
     tris = [], [], []
-    for ys, xs in _blobs(mask):
-        if len(ys) < min_px or np.ptp(xs) < 5:
-            continue                                    # pino
+    ys0, xs0 = np.nonzero(mask)
+    left = np.ones(len(ys0), bool)
+    bars = []
+    while left.sum() >= min_px:                         # retas de inclinação ±1: a mais populosa sai primeiro
+        best = None
+        for back, key in ((True, ys0 - xs0), (False, ys0 + xs0)):
+            vals = np.bincount((key[left] - key.min() + 1))
+            win = vals + np.r_[vals[1:], 0] + np.r_[0, vals[:-1]]
+            i = int(win.argmax())
+            if best is None or win[i] > best[0]:
+                best = (int(win[i]), back, key, i + key.min() - 1)
+        n, back, key, k = best
+        if n < min_px:
+            break
+        sel = left & (np.abs(key - k) <= 1)
+        if np.ptp(xs0[sel]) >= 5:
+            bars.append((back, ys0[sel], xs0[sel]))
+        left &= ~sel
+    for back, ys, xs in bars:
+        x0, x1 = float(xs.min()), float(xs.max()) + 1
+        c = -(x0 - w / 2) / HT if back else (x1 - w / 2) / HT
+
+        def place(sx, sy, back=back, c=c):
+            du = (sx - w / 2) / HT
+            lx, ly = (du + c, np.full_like(du, c)) if back else (np.full_like(du, c), c - du)
+            return np.stack([lx, ly, (HT * (lx + ly) + h - 44 - sy) / PZ], 1)
+
         part = np.zeros_like(mask)
         part[ys, xs] = True
-        m = rail_mesh(part, max_err=3.0, foot=mask)
-        if m is not None:
-            for k in range(3):
-                tris[k].append(m[k])
+        m = _plane_mesh(part, place)
+        for k in range(3):
+            tris[k].append(m[k])
     if not tris[0]:
         return None
     return tuple(np.concatenate(t) for t in tris)
@@ -1358,7 +1384,7 @@ def sprite_mesh(img, tx, cat, sub, name='', height=0, surface=False):
         hh = max(1.0, (mask.shape[0] - 44 - _bbox(mask)[1]) / 4.0)    # topo do losango = (0,0,H)
         return 'caixa', box_mesh(mask, [(0.0, 0.0, 1.0, 1.0, hh)])
     if re.search(r'display case|\brail|railing|\bfence', name, re.I) and height <= (6 if 'display case' in name.lower() else 3) and not surface:
-        mesh = rail_mesh(mask) or (rail_parts(mask) if 'display case' in name.lower() else None)
+        mesh = (rail_parts(mask) if 'display case' in name.lower() else None) or rail_mesh(mask)
         if mesh is not None:
             return 'grade', mesh
     if cat == 'furniture' and ((sub == 'table' and surface and height >= 2) or re.search(r'\bbench\b', name, re.I)):
