@@ -598,8 +598,9 @@ def _compact(P, px, tris, min_area=1e-10):
     return P[used], px[used], remap[tris]
 
 
-def flat_mesh(mask, t=FLAT_THICK, target=FLAT_CELLS):
-    """Silhueta desprojetada no chão: pele de cima (na altura t), base e paredes laterais na borda."""
+def flat_mesh(mask, t=FLAT_THICK, target=FLAT_CELLS, plinth=False):
+    """Silhueta desprojetada no chão: pele de cima (na altura t), base e paredes laterais na borda.
+    plinth: a pegada é a do chão (z = 0) também em cima: arte pintada no losango do tile, erguida."""
     h, w = mask.shape
     x0, y0, x1, y1 = _bbox(mask)
     m = mask[y0:y1, x0:x1]
@@ -612,7 +613,7 @@ def flat_mesh(mask, t=FLAT_THICK, target=FLAT_CELLS):
 
     def ground(z):
         d = (sx - w / 2) / HT                       # lx − ly
-        s = (sy - (h - 44) + PZ * z) / HT           # lx + ly
+        s = (sy - (h - 44) + PZ * (0.0 if plinth else z)) / HT   # lx + ly
         return np.stack([(s + d) / 2, (s - d) / 2, np.full(len(sx), z)], 1)
 
     n = len(sx)
@@ -911,6 +912,18 @@ def bed_mesh(img, H):
     return tuple(np.concatenate([p[k] for p in parts]) for k in range(3))
 
 
+def slab_mesh(mask, H, rest_plane=None):
+    """Caixa do tile na altura H com o resto da silhueta num plano (rest_plane, ou um cartão no centro do
+    tile): banco de encosto = assento em caixa e o encosto num plano na borda do tile."""
+    box = (0.0, 0.0, 1.0, 1.0, float(H))
+    rest = mask & ~_hexagon_cover(mask.shape, [box])
+    parts = [box_mesh(mask, [box])]
+    if rest.sum() >= 8:
+        mesh = rest_plane(rest) if rest_plane else None
+        parts.append(mesh if mesh is not None else _plane_mesh(rest, _facing_plane(rest, 1.0)))
+    return tuple(np.concatenate([p[k] for p in parts]) for k in range(3))
+
+
 PLANT_NAMES = (r'bramble|sapling|rushes|\bweeds?\b|cattail|fan plant|elephant ear|snake plant|poppies|'
                r'century plant|yucca|grapevine|blade plant|water plants|\bfern|\breeds?\b|\bgrass|'
                r'\bflowers?\b|mushroom|\bcrops?\b|wheat|\bcorn\b|cotton|\bflax|hay sheave|lettuce|cabbage|'
@@ -1111,6 +1124,11 @@ def sprite_mesh(img, tx, cat, sub, name='', height=0, surface=False):
             return 'cilindro', mesh
     if cat == 'furniture' and sub == 'bed':
         return 'cama', bed_mesh(img, height if height > 0 else 5)
+    if re.search(r'\bfountain\b', name, re.I) and mask.shape[1] <= 46 and mask.shape[0] <= 60:
+        # fatia de chafariz de vários tiles: a bacia é pintada no losango do chão; vira laje erguida
+        return 'laje', flat_mesh(mask, max(height, 1), plinth=True)
+    if re.search(r'\bbench\b', name, re.I) and mask.shape[0] >= 70:
+        return 'laje', slab_mesh(mask, 4, lambda r: rail_mesh(r, snap=True))   # banco de encosto
     if re.search(r'display case|\brail|railing|\bfence', name, re.I) and height <= 3 and not surface:
         mesh = rail_mesh(mask)
         if mesh is not None:
