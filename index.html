@@ -60,12 +60,14 @@
     <label class="chk" for="opt-roofs"><input id="opt-roofs" type="checkbox"> Telhados</label>
     <label class="chk" for="opt-smooth"><input id="opt-smooth" type="checkbox"> Relevo suave</label>
   </div>
+  <label class="chk" for="opt-classic"><input id="opt-classic" type="checkbox"> Vista 2D (ângulo e escala do cliente)</label>
   <label for="zs">Escala de altura <span id="zsv"></span><input id="zs" type="range" min="0.03" max="0.5" step="0.005"></label>
   <label for="rad">Distância de visão <span id="radv"></span><input id="rad" type="range" min="2" max="14" step="1"></label>
   <form class="goto" id="goto"><input id="gx" inputmode="numeric" placeholder="x" aria-label="x"><input id="gy" inputmode="numeric" placeholder="y" aria-label="y"><button>Ir</button></form>
   <details><summary>Controles</summary><ul>
     <li>Arrastar: mover</li><li>Botão direito ou Ctrl + arrastar: girar / inclinar</li>
     <li>Roda ou pinça: zoom</li><li>WASD / setas: mover · Q/E: girar</li><li>Clique no minimapa: teleporte</li>
+    <li>Vista 2D: zoom 1 = 44 px por tile, como o cliente; não gira</li>
   </ul></details>
 </div>
 
@@ -97,6 +99,17 @@ const mat4 = {
     const yx = zy * xz - zz * xy, yy = zz * xx - zx * xz, yz = zx * xy - zy * xx;
     return new Float32Array([xx, yx, zx, 0, xy, yy, zy, 0, xz, yz, zz, 0,
       -(xx * e[0] + xy * e[1] + xz * e[2]), -(yx * e[0] + yy * e[1] + yz * e[2]), -(zx * e[0] + zy * e[1] + zz * e[2]), 1]);
+  },
+  // projeção do cliente 2D (oblíqua militar): pixel = (22(x − y), 22(x + y) − 4z) a partir do alvo c,
+  // com z = altura / zs. s = pixels por pixel da art; profundidade ao longo de (1, 11·zs, 1), o raio
+  // que cai num mesmo pixel: quem tem maior x + y + z fica na frente, como no cliente.
+  classic(c, zs, s, w, h, depth) {
+    const a = 44 * s / w, e = 44 * s / h, k = 4 * 2 * s / h / zs, r = 1 / depth, q = 11 * zs;
+    return new Float32Array([
+      a, -e, -r, 0,
+      0, k, -q * r, 0,
+      -a, -e, -r, 0,
+      -a * (c[0] - c[2]), e * (c[0] + c[2]) - k * c[1], (c[0] + q * c[1] + c[2]) * r, 1]);
   },
   mul(a, b) {
     const o = new Float32Array(16);
@@ -195,6 +208,7 @@ uniform vec2 uFogRange, uCenter;
 uniform float uTime;
 uniform float uRep;    // tiles por repetição da textura: 1 = uma textura por tile (clássico)
 uniform float uBlend;  // 0 = bordas duras; > 0 = largura da transição suave entre materiais vizinhos
+uniform bool uFlat;    // vista 2D: sem sombreamento, como o cliente
 in vec3 vWorld;
 in vec2 vLocal;
 in vec3 vNormal;
@@ -242,8 +256,8 @@ void main() {
   }
   vec3 n = dot(vNormal, vNormal) > 0.0 ? normalize(vNormal) : normalize(cross(dFdx(vWorld), dFdy(vWorld)));
   if (n.y < 0.0) n = -n;
-  vec3 lit = col * (0.55 + 0.6 * max(dot(n, uSun), 0.0));
-  if (water) {
+  vec3 lit = uFlat ? col : col * (0.55 + 0.6 * max(dot(n, uSun), 0.0));
+  if (water && !uFlat) {
     vec3 v = normalize(uEye - vWorld);
     lit += vec3(0.18) * pow(max(dot(n, normalize(v + uSun)), 0.0), 40.0);
   }
@@ -262,7 +276,7 @@ gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
 gl.linkProgram(prog);
 if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) fail('<pre>' + gl.getProgramInfoLog(prog) + '</pre>');
 const U = {};
-for (const n of ['uH', 'uVP', 'uOrigin', 'uZS', 'uS', 'uNb', 'uSmooth', 'uM', 'uMat', 'uT64', 'uT128', 'uEye', 'uSun', 'uFog', 'uFogRange', 'uCenter', 'uTime', 'uRep', 'uBlend'])
+for (const n of ['uH', 'uVP', 'uOrigin', 'uZS', 'uS', 'uNb', 'uSmooth', 'uM', 'uMat', 'uT64', 'uT128', 'uEye', 'uSun', 'uFog', 'uFogRange', 'uCenter', 'uTime', 'uRep', 'uBlend', 'uFlat'])
   U[n] = gl.getUniformLocation(prog, n);
 const vao = gl.createVertexArray(); // sem atributos: tudo vem de gl_VertexID
 
@@ -330,6 +344,7 @@ uniform vec2 uOrigin;
 uniform float uZS;
 uniform int uKind;                 // 0 telhado, > 0 malha
 uniform int uRoofs;
+uniform bool uFlat;                // vista 2D: o pixel da art vem da projeção do UO do próprio vértice
 out vec2 vPix;
 out vec3 vWorld;
 out vec3 vN;
@@ -393,6 +408,20 @@ void main() {
   vTrim = uvec4(t1.xy, t2.x >> 8, (aB >> 16) & 0x3FFFu);
   vWorld = vec3(uOrigin.x + tile.x + L.x, (tile.z + L.z) * uZS, uOrigin.y + tile.y + L.y);
   gl_Position = uVP * vec4(vWorld, 1.0);
+  if (uFlat && uKind != 0) {
+    // vista 2D: o vértice vai para o pixel da art que carrega: ponto M com o mesmo lx + ly do 3D sobre o
+    // raio da câmera do UO desse pixel. A imagem é a art; faces escondidas (verso, base, lados de trás)
+    // carregam o pixel da face da frente e, com lx + ly menor, ficam atrás dela. Como no cliente, o objeto
+    // fica por cima do chão do próprio tile: para a profundidade, M abaixo de z + 0,25 desliza pelo raio
+    // (1, 1, 11), que não muda o pixel, até essa altura
+    float s = L.x + L.y, d = (vPix.x - floor(w * 0.5)) / 22.0;   // largura ímpar: o cliente arredonda para baixo
+    vec3 M = vec3((s + d) * 0.5, (s - d) * 0.5, (22.0 * s + h - 44.0 - vPix.y) / 4.0);
+    vec3 Mz = M + vec3(1.0, 1.0, 11.0) * max(0.0, (0.25 - M.z) / 11.0);
+    vec2 o = vec2(uOrigin.x + tile.x, uOrigin.y + tile.y);
+    vec4 p = uVP * vec4(o.x + M.x, (tile.z + M.z) * uZS, o.y + M.y, 1.0);
+    vec4 q = uVP * vec4(o.x + Mz.x, (tile.z + Mz.z + tie * 0.04) * uZS, o.y + Mz.y, 1.0);
+    gl_Position = vec4(p.xy, q.z, 1.0);
+  }
 }`;
 
 const S_FS = `#version 300 es
@@ -402,6 +431,7 @@ uniform highp sampler2D uHues;
 uniform vec3 uSun, uFog, uEye;
 uniform vec2 uFogRange, uCenter;
 uniform float uAtlasSize;
+uniform bool uFlat;     // vista 2D: a art já vem sombreada
 in vec2 vPix;
 in vec3 vWorld;
 in vec3 vN;
@@ -423,7 +453,7 @@ void main() {
   }
   vec3 n = dot(vN, vN) > 0.0 ? normalize(vN) : normalize(cross(dFdx(vWorld), dFdy(vWorld)));
   if (dot(n, uEye - vWorld) < 0.0) n = -n;
-  float light = 0.55 + 0.6 * max(dot(n, uSun), 0.0);
+  float light = uFlat ? 1.0 : 0.55 + 0.6 * max(dot(n, uSun), 0.0);
   float f = smoothstep(uFogRange.x, uFogRange.y, distance(uCenter, vWorld.xz));
   outColor = vec4(mix(col * light, uFog, f), 1.0);
 }`;
@@ -434,7 +464,7 @@ gl.attachShader(sprog, compile(gl.FRAGMENT_SHADER, S_FS));
 gl.linkProgram(sprog);
 if (!gl.getProgramParameter(sprog, gl.LINK_STATUS)) fail('<pre>' + gl.getProgramInfoLog(sprog) + '</pre>');
 const SU = {};
-for (const n of ['uSpr', 'uMesh', 'uVP', 'uOrigin', 'uZS', 'uKind', 'uRoofs', 'uAtlas', 'uHues', 'uSun', 'uFog', 'uEye', 'uFogRange', 'uCenter', 'uAtlasSize'])
+for (const n of ['uSpr', 'uMesh', 'uVP', 'uOrigin', 'uZS', 'uKind', 'uRoofs', 'uAtlas', 'uHues', 'uSun', 'uFog', 'uEye', 'uFogRange', 'uCenter', 'uAtlasSize', 'uFlat'])
   SU[n] = gl.getUniformLocation(sprog, n);
 
 const svao = gl.createVertexArray();
@@ -444,6 +474,16 @@ gl.bindVertexArray(null);
 // vértices por instância de cada lote (manifest.meshClasses): 0 = telhado (6), k = malhas de até N vértices
 let kindVerts = [6];
 const statics = { ready: false, sprTex: null, meshTex: null, atlas: null, atlasSize: 4096, hueTex: null, exists: null };
+
+// itens avulsos (ex.: item dinâmico do servidor) por ?items=sprite:lote:x:y:z[:hue],...
+// sprite/lote vêm de tools/sprite_lookup.py (graphic -> índice em sprites.bin)
+const extraItems = (new URLSearchParams(location.search).get('items') || '').split(',').filter(Boolean).map((s) => {
+  const [spr, kind, x, y, z, hue = 0] = s.split(':').map(Number);
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Uint32Array([(x & 63) | ((y & 63) << 6) | ((z + 128) << 12), spr | (hue << 16)]), gl.STATIC_DRAW);
+  return { buf, kind, ox: x - (x & 63), oy: y - (y & 63) };
+});
 
 // SPR1: u32 magic, u32 n, u32 linhas (múltiplo de 256), 16 × u16 por sprite → textura RGBA16UI 1024 × linhas/256
 function loadSprites(buf) {
@@ -609,7 +649,8 @@ function chunkLod(cx, cy) {
 }
 
 // ------------------------------------------------------------ câmera e controles
-const cam = { x: 1495, y: 1629, h: 0, yaw: Math.PI / 4, pitch: 0.75, dist: 70 };
+// classic: vista 2D do cliente (projeção oblíqua, 44 px por tile × zoom); senão perspectiva livre
+const cam = { x: 1495, y: 1629, h: 0, yaw: Math.PI / 4, pitch: 0.75, dist: 70, classic: false, zoom: 1 };
 const settings = { zScale: 0.1286, radius: 6, statics: true, roofs: true, smooth: true };
 const keys = new Set();
 
@@ -619,6 +660,11 @@ function setTarget(x, y) {
 }
 
 function pan(dxPix, dyPix) {
+  if (cam.classic) {   // inverso de (22(x − y), 22(x + y)) × zoom
+    const u = dxPix / (22 * cam.zoom), v = dyPix / (22 * cam.zoom);
+    setTarget(cam.x - (u + v) / 2, cam.y - (v - u) / 2);
+    return;
+  }
   const s = cam.dist / canvas.clientHeight * 1.1;
   const sx = Math.sin(cam.yaw), cx = Math.cos(cam.yaw);
   // direita = (cos, -sin) ; tela-para-baixo no chão = (sin, cos) em (x, y) do mapa
@@ -638,15 +684,16 @@ canvas.addEventListener('pointermove', (e) => {
   if (!p) return;
   const dx = e.clientX - p.x, dy = e.clientY - p.y;
   if (pointers.size === 1) {
-    if (p.rotate) { cam.yaw -= dx * 0.005; cam.pitch = Math.max(0.15, Math.min(1.5, cam.pitch + dy * 0.004)); }
+    if (p.rotate && cam.classic) { /* vista 2D tem ângulo fixo */ }
+    else if (p.rotate) { cam.yaw -= dx * 0.005; cam.pitch = Math.max(0.15, Math.min(1.5, cam.pitch + dy * 0.004)); }
     else pan(dx, dy);
   } else if (pointers.size === 2) {
     const [a, b] = [...pointers.values()];
     const before = { d: Math.hypot(a.x - b.x, a.y - b.y), ang: Math.atan2(b.y - a.y, b.x - a.x) };
     p.x = e.clientX; p.y = e.clientY;
     const after = { d: Math.hypot(a.x - b.x, a.y - b.y), ang: Math.atan2(b.y - a.y, b.x - a.x) };
-    if (before.d > 0 && after.d > 0) cam.dist = Math.max(5, Math.min(700, cam.dist * before.d / after.d));
-    cam.yaw -= after.ang - before.ang;
+    if (before.d > 0 && after.d > 0) zoomBy(before.d / after.d);
+    if (!cam.classic) cam.yaw -= after.ang - before.ang;
     return;
   }
   p.x = e.clientX; p.y = e.clientY;
@@ -654,19 +701,29 @@ canvas.addEventListener('pointermove', (e) => {
 for (const ev of ['pointerup', 'pointercancel']) canvas.addEventListener(ev, (e) => pointers.delete(e.pointerId));
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
-  cam.dist = Math.max(5, Math.min(700, cam.dist * Math.exp(e.deltaY * 0.0012)));
+  zoomBy(Math.exp(e.deltaY * 0.0012));
 }, { passive: false });
+// f > 1 afasta
+function zoomBy(f) {
+  if (cam.classic) cam.zoom = Math.max(0.1, Math.min(8, cam.zoom / f));
+  else cam.dist = Math.max(5, Math.min(700, cam.dist * f));
+}
 addEventListener('keydown', (e) => { if (e.target.tagName !== 'INPUT') keys.add(e.key.toLowerCase()); });
 addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
 addEventListener('blur', () => keys.clear());
 
 function applyKeys(dt) {
-  const sp = cam.dist * 1.2 * dt * (keys.has('shift') ? 3 : 1);
   let fx = 0, fy = 0;
   if (keys.has('w') || keys.has('arrowup')) fy -= 1;
   if (keys.has('s') || keys.has('arrowdown')) fy += 1;
   if (keys.has('a') || keys.has('arrowleft')) fx -= 1;
   if (keys.has('d') || keys.has('arrowright')) fx += 1;
+  const boost = keys.has('shift') ? 3 : 1;
+  if (cam.classic) {
+    if (fx || fy) pan(-fx * 600 * dt * boost, -fy * 600 * dt * boost);
+    return;
+  }
+  const sp = cam.dist * 1.2 * dt * boost;
   if (fx || fy) pan(-fx * sp * canvas.clientHeight / cam.dist / 1.1, -fy * sp * canvas.clientHeight / cam.dist / 1.1);
   if (keys.has('q')) cam.yaw += dt * 1.5;
   if (keys.has('e')) cam.yaw -= dt * 1.5;
@@ -708,6 +765,8 @@ function setupUI() {
     el.addEventListener('change', () => { settings[k] = el.checked; });
   }
   $('opt-statics').disabled = !statics.ready;
+  $('opt-classic').checked = cam.classic;
+  $('opt-classic').addEventListener('change', (e) => { cam.classic = e.target.checked; });
   $('goto').addEventListener('submit', (e) => {
     e.preventDefault();
     const x = parseInt($('gx').value, 10), y = parseInt($('gy').value, 10);
@@ -757,11 +816,18 @@ function frame(now) {
   gl.enable(gl.DEPTH_TEST);
 
   const target = [cam.x, cam.h, cam.y];
-  const cp = Math.cos(cam.pitch);
-  const eye = [target[0] + cam.dist * cp * Math.sin(cam.yaw), target[1] + cam.dist * Math.sin(cam.pitch), target[2] + cam.dist * cp * Math.cos(cam.yaw)];
-  const far = settings.radius * CH * 1.6 + cam.dist;
-  const proj = mat4.perspective(0.85, w / h, Math.max(0.5, cam.dist * 0.02), far);
-  const vp = mat4.mul(proj, mat4.lookAt(eye, target, [0, 1, 0]));
+  let eye, vp;
+  if (cam.classic) {
+    const q = 11 * settings.zScale, l = Math.hypot(1, q, 1);   // olho distante ao longo do raio da projeção
+    eye = [target[0] + 1000 / l, target[1] + 1000 * q / l, target[2] + 1000 / l];
+    vp = mat4.classic(target, settings.zScale, cam.zoom * dpr, w, h, settings.radius * CH * 3 + 400);
+  } else {
+    const cp = Math.cos(cam.pitch);
+    eye = [target[0] + cam.dist * cp * Math.sin(cam.yaw), target[1] + cam.dist * Math.sin(cam.pitch), target[2] + cam.dist * cp * Math.cos(cam.yaw)];
+    const far = settings.radius * CH * 1.6 + cam.dist;
+    const proj = mat4.perspective(0.85, w / h, Math.max(0.5, cam.dist * 0.02), far);
+    vp = mat4.mul(proj, mat4.lookAt(eye, target, [0, 1, 0]));
+  }
   const planes = frustumPlanes(vp);
   const fogEnd = settings.radius * CH * 0.95;
 
@@ -778,6 +844,7 @@ function frame(now) {
   gl.uniform1f(U.uTime, now / 1000);
   gl.uniform1f(U.uRep, manifest.texRepeat || 1);
   gl.uniform1f(U.uBlend, manifest.blend || 0);
+  gl.uniform1i(U.uFlat, cam.classic ? 1 : 0);
   gl.uniform1i(U.uH, 0); gl.uniform1i(U.uM, 1); gl.uniform1i(U.uMat, 2); gl.uniform1i(U.uT64, 3); gl.uniform1i(U.uT128, 4);
   gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, matTex);
   gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex64);
@@ -813,6 +880,7 @@ function frame(now) {
     gl.uniform1f(SU.uAtlasSize, statics.atlasSize);
     gl.uniform1i(SU.uSpr, 5); gl.uniform1i(SU.uAtlas, 6); gl.uniform1i(SU.uHues, 7);
     gl.uniform1i(SU.uRoofs, settings.roofs ? 1 : 0);
+    gl.uniform1i(SU.uFlat, cam.classic ? 1 : 0);
     gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, statics.sprTex);
     gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D_ARRAY, statics.atlas);
     gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, statics.hueTex);
@@ -838,6 +906,15 @@ function frame(now) {
         gl.uniform2f(SU.uOrigin, c.cx * CH, c.cy * CH);
         gl.drawArraysInstanced(gl.TRIANGLES, 0, kindVerts[k], n);
         inst += n;
+      }
+      for (const it of extraItems) {
+        if (it.kind !== k) continue;
+        gl.bindBuffer(gl.ARRAY_BUFFER, it.buf);
+        gl.vertexAttribIPointer(0, 1, gl.UNSIGNED_INT, 0, 0);
+        gl.vertexAttribIPointer(1, 1, gl.UNSIGNED_INT, 0, 4);
+        gl.uniform2f(SU.uOrigin, it.ox, it.oy);
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, kindVerts[k], 1);
+        inst++;
       }
     }
   }
@@ -882,6 +959,11 @@ function frame(now) {
   }
   const m = /^#(\d+),(\d+)$/.exec(location.hash);
   if (m) setTarget(+m[1], +m[2]); else setTarget(...manifest.start);
+  const q = new URLSearchParams(location.search);
+  if (q.has('dist')) cam.dist = +q.get('dist');
+  if (q.has('pitch')) cam.pitch = +q.get('pitch');
+  if (q.get('view') === '2d') cam.classic = true;
+  if (q.has('zoom')) cam.zoom = +q.get('zoom');
   addEventListener('hashchange', () => { const h = /^#(\d+),(\d+)$/.exec(location.hash); if (h) setTarget(+h[1], +h[2]); });
   setupUI();
   requestAnimationFrame(frame);

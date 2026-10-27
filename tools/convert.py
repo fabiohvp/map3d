@@ -314,13 +314,14 @@ def fit_slope(mask):
 # Cada sprite vira uma malha neste referencial; a textura de cada vértice é o pixel do sprite na câmera
 # do UO (faces que a câmera não vê reusam o pixel da face oposta). Motores:
 #   box     caixa medida do hexágono da silhueta (pegada a × b e altura saem da art, nada é chutado)
-#   hull    "almofada" fechada inflada da silhueta; a casca da frente reprojeta exatamente no sprite
+#   hull    "almofada" fechada inflada da silhueta, com a profundidade 2:1 da art de objetos redondos
 #   flat    silhueta deitada no chão (tapetes, decalques, pisos que não fecham como caixa)
 #   card    casco fino (efeitos, armas, quadros e sprites esparsos)
 HT = 22.0
 SQ2 = 2 ** 0.5
 PXP = HT * SQ2           # px por tile no eixo horizontal da tela
 PZ = 4.0                 # px por unidade de z
+ART_DEPTH = HT / 2       # px por unidade de lx + ly na art de objetos redondos (2:1; o chão usa HT)
 METRIC_Z = 0.1           # 1 z = 0,1 tile: referencial "métrico" das normais
 MIN_DIM = 0.08
 HULL_CELLS = 32          # células da grade do casco (o assets3d usa 420; aqui são milhões de instâncias)
@@ -561,12 +562,12 @@ def _box_mesh(w, h, x0, y0, x1, y1, H):
     return _expand(P, _proj(S, w, h), tris)
 
 
-def _cells(mask, c):
+def _cells(mask, c, fill=0.3):
     h, w = mask.shape
     R, C = -(-h // c), -(-w // c)
     pad = np.zeros((R * c, C * c), np.float32)
     pad[:h, :w] = mask
-    return pad.reshape(R, c, C, c).mean(axis=(1, 3)) >= 0.3
+    return pad.reshape(R, c, C, c).mean(axis=(1, 3)) >= fill
 
 
 def _grid(cin):
@@ -704,19 +705,23 @@ def _smooth_normals(P, tris):
 def hull_mesh(mask, rho, target=HULL_CELLS):
     """Casco fechado inflado da silhueta. Espessura T(v) = ρ·√(d(2r − d)), d = distância à borda e r = raio
     inscrito local. O plano médio é o plano vertical pelo centro do tile (lx + ly = 1) voltado para a câmera;
-    frente e verso se afastam ±T dele na horizontal, soldados na borda. A altura de cada vértice sai da
-    linha do pixel (última linha da art ≈ chão). Assim peças do mesmo tile (tronco e copa
-    de uma árvore) ficam centradas no tile e alinhadas entre si; o assets3d aterra cada sprite pelo próprio
-    pixel mais baixo, o que jogava o tronco no canto da frente do tile e a copa para trás.
+    frente e verso se afastam ±T dele na horizontal, soldados na borda.
+    Objetos redondos são desenhados em 2:1 (a boca do barril é uma elipse 2:1), não na oblíqua do chão:
+    o pixel de (lx, ly, lz) é v = 11(lx + ly) − 4·lz + c. A altura de cada vértice sai daí, com 4 px por z
+    (a escala de paredes, pisos e do tiledata) e a profundidade comprimida como na art, ancorada como no
+    UO (centro do tile no chão na linha h − 22). Se a frente afundaria, o objeto sobe até encostar no chão;
+    o verso, que cairia abaixo, para no chão. A câmera 3D que mostra
+    essas proporções como a art olha a atan(1/2) ≈ 26,6° do chão. A vista 2D do viewer não depende disso:
+    lá cada vértice vai para o pixel que carrega e a profundidade só ordena.
+    Peças do mesmo tile (tronco e copa de uma árvore) ficam centradas no tile e alinhadas entre si.
     A borda de baixo conta como interior (espelhada para baixo): base com volume."""
     h, w = mask.shape
     ax = w / 2
     x0, y0, x1, y1 = _bbox(mask)
     m = mask[y0:y1, x0:x1]
     c = max(1, int(math.ceil(math.sqrt(max(int(m.sum()), 1) / target))))
-    cin = _cells(m, c)
-    if not cin.any():
-        c, cin = 1, _cells(m, 1)
+    # toda célula com algum pixel: a casca cobre a silhueta inteira e o alpha da art recorta a sobra
+    cin = _cells(m, c, 1e-6)
     R, C = cin.shape
     padc = np.zeros((2 * R + 2, C + 2), bool)
     padc[1:R + 1, 1:C + 1] = cin
@@ -737,16 +742,23 @@ def hull_mesh(mask, rho, target=HULL_CELLS):
     sx = np.minimum(x0 + jj * c, x1).astype(float)
     sy = (y0 + np.minimum(ii * c, y1 - y0)).astype(float)
     Tf = Tv[ii, jj]
-    p = (sx - ax) / PXP
+    dd = (sx - ax) / HT                               # lx − ly
+    sf, sb = 1 + SQ2 * Tf, 1 - SQ2 * Tf               # lx + ly da frente e do verso
+    # âncora do UO: o centro do tile no chão cai na linha h − 22; o que afundaria sobe até z = 0
+    # (copas, que começam alto na art, ficam onde estão e alinhadas com o tronco)
+    def monotone(lz):
+        # descendo a coluna da art a altura não sobe: a casca não dobra onde T cresce rápido (perto do topo)
+        g = np.full(vid.shape, -np.inf)
+        g[ii, jj] = lz
+        g = np.maximum.accumulate(g[::-1], axis=0)[::-1]
+        return g[ii, jj]
 
-    lz = (h - sy) / PZ
-    # o pé do objeto fica um pouco acima da última linha da art: desce até 4 z (copas, que começam bem
-    # mais alto, descem os mesmos 4 z que o tronco e continuam alinhadas com ele)
-    lz -= min(float(lz.min()), 4.0)
-    q_c = 1 / SQ2                                     # centro do tile: lx + ly = 1
-    qf, qb = q_c + Tf, q_c - Tf
-    front = np.stack([(qf + p) / SQ2, (qf - p) / SQ2, lz], 1)
-    back = np.stack([(qb + p) / SQ2, (qb - p) / SQ2, lz], 1)
+    lzf = monotone((h - 22 - sy + ART_DEPTH * (sf - 1)) / PZ)
+    lift = max(0.0, -float(lzf.min()))
+    lzf += lift
+    lzb = np.maximum(monotone((h - 22 - sy + ART_DEPTH * (sb - 1)) / PZ) + lift, 0.0)
+    front = np.stack([(sf + dd) / 2, (sf - dd) / 2, lzf], 1)
+    back = np.stack([(sb + dd) / 2, (sb - dd) / 2, lzb], 1)
     interior = Tf > 1e-4
     nF = len(front)
     back_idx = np.where(interior, nF + np.cumsum(interior) - 1, np.arange(nF))
