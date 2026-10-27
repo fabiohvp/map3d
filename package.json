@@ -7,6 +7,7 @@
     "start": "npx serve .",
     "dev": "npx serve . -l 3000",
     "serve": "npx http-server -p 8080 -c-1 .",
+		"viewer": "npx serve ./viewer -l 3001",
     "generate:maps": "python tools/convert.py --source classic",
     "generate:maps:all": "npm run generate:map:0 && npm run generate:map:1 && npm run generate:map:2 && npm run generate:map:3 && npm run generate:map:4 && npm run generate:map:5",
     "generate:map:0": "python tools/convert.py --map 0 --source classic",
