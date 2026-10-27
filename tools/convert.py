@@ -1160,7 +1160,7 @@ def build_terrain(src, n, W, H, out_map):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--source', choices=('enhanced', 'classic'), default='enhanced')
+    ap.add_argument('--source', choices=('enhanced', 'classic'), default='classic')
     ap.add_argument('--client', default=None,
                     help='pasta do cliente (padrão: "Ultima Online Enhanced" ou a pasta do Classic, conforme --source)')
     ap.add_argument('--map', type=int, default=0)

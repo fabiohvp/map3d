@@ -31,7 +31,7 @@ MAP_DIMS = {
 
 
 class ConversionPipeline:
-    def __init__(self, client_dir: str, map_id: int, out_dir: str, variant: str = "", source: str = "enhanced"):
+    def __init__(self, client_dir: str, map_id: int, out_dir: str, variant: str = "", source: str = "classic"):
         if source not in ("enhanced", "classic"):
             raise ValueError(f"Unknown source: {source}. Use 'enhanced' or 'classic'.")
         self.source = source

@@ -6,7 +6,23 @@
   "scripts": {
     "start": "npx serve .",
     "dev": "npx serve . -l 3000",
-    "serve": "npx http-server -p 8080 -c-1 ."
+    "serve": "npx http-server -p 8080 -c-1 .",
+    "generate:maps": "python tools/convert.py --source classic",
+    "generate:maps:all": "npm run generate:map:0 && npm run generate:map:1 && npm run generate:map:2 && npm run generate:map:3 && npm run generate:map:4 && npm run generate:map:5",
+    "generate:map:0": "python tools/convert.py --map 0 --source classic",
+    "generate:map:1": "python tools/convert.py --map 1 --source classic",
+    "generate:map:2": "python tools/convert.py --map 2 --source classic",
+    "generate:map:3": "python tools/convert.py --map 3 --source classic",
+    "generate:map:4": "python tools/convert.py --map 4 --source classic",
+    "generate:map:5": "python tools/convert.py --map 5 --source classic",
+    "generate:map:classic": "python tools/convert.py --source classic",
+    "generate:map:enhanced": "python tools/convert.py --source enhanced",
+    "generate:assets:catalog": "python tools/catalog.py",
+    "generate:assets:flora": "python tools/catalog_flora.py",
+    "generate:assets": "npm run generate:assets:catalog && npm run generate:assets:flora",
+    "generate:all": "npm run generate:maps && npm run generate:assets",
+    "maps": "npm run generate:maps",
+    "assets": "npm run generate:assets"
   },
   "keywords": [
     "ultima-online",
