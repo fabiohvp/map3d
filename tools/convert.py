@@ -21,6 +21,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 MAPS = {0: (7168, 4096), 1: (7168, 4096), 2: (2304, 1600), 3: (2560, 2048), 4: (1448, 1448), 5: (1280, 4096)}
 CHUNK = 64
 VOID_LAND = {0x0002, 0x01DB, 0x0244} | set(range(0x01AE, 0x01B6))
+HOLE = 0xFFFE            # material de void com static embaixo: o viewer não desenha
 WET = 0x80
 KIND_TEX, KIND_ART, KIND_WATER = 0, 1, 2
 
@@ -431,6 +432,45 @@ def fit_box(mask):
     return x0, y0, x1, y1, H
 
 
+def fit_top_box(mask, H=None):
+    """Caixa de móvel com tampo (mesa, balcão, banco): a pegada sai do losango do tampo (vértices de
+    cima, esquerda e direita da silhueta) e a caixa desce até o chão; o recorte por alpha deixa só as
+    pernas. Peças do meio da mesa são só o tampo flutuando, sem pixel no chão, então fit_box as
+    deitava no piso. H = altura do tampo (tiledata); sem H, o tampo fica centrado no tile."""
+    h, w = mask.shape
+    bx0, by0, bx1, by1 = _bbox(mask)
+    rows = np.arange(by0, by1)
+    rows = rows[mask[rows].any(1)]
+    L = np.array([np.nonzero(mask[v])[0][0] for v in rows])
+    R = np.array([np.nonzero(mask[v])[0][-1] + 1 for v in rows])
+
+    def vertex(E, sgn):
+        # desce pelas bordas de cima do tampo (1 px por linha) até pararem de abrir: pés e pernas
+        # que saem para o lado abaixo do tampo não contam
+        k = 0
+        while k + 4 < len(E) and sgn * (E[k + 4] - E[k]) >= 3:
+            k += 1
+        while k + 1 < len(E) and sgn * (E[k + 1] - E[k]) >= 1:
+            k += 1
+        return k
+
+    kl, kr = vertex(L, -1), vertex(R, 1)
+    lu, ru = float(L[kl]), float(R[kr])
+    a, b = (rows[kr] + 0.5 - by0) / HT, (rows[kl] + 0.5 - by0) / HT   # vértices direito (x1, y0) e esquerdo (x0, y1)
+    s = (ru - lu) / HT
+    a, b = (s * a / (a + b), s * b / (a + b)) if a + b > 0 else (s / 2, s / 2)
+    a, b = max(a, MIN_DIM), max(b, MIN_DIM)
+    bx0 = lu
+    if H is None:
+        sum0 = 1 - (a + b) / 2
+        H = (HT * sum0 + h - 44 - by0) / PZ
+    else:
+        sum0 = (by0 - h + 44 + PZ * H) / HT                  # x0 + y0 pelo vértice de cima
+    dif0 = (bx0 - w / 2) / HT + b                            # x0 − y0 pelo vértice esquerdo
+    x0, y0 = (sum0 + dif0) / 2, (sum0 - dif0) / 2
+    return x0, y0, x0 + a, y0 + b, max(float(H), 0.2)
+
+
 def _box_corners(x0, y0, x1, y1, H):
     return np.array([(x, y, z) for z in (0.0, H) for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))])
 
@@ -450,8 +490,9 @@ def _convex(pts):
     return lo[:-1] + hi[:-1]
 
 
-def hexagon_iou(mask, boxes):
-    """IoU entre a silhueta e a projeção das caixas (cada uma = fecho convexo dos seus 8 cantos)."""
+def hexagon_iou(mask, boxes, of_mask=False):
+    """IoU entre a silhueta e a projeção das caixas (cada uma = fecho convexo dos seus 8 cantos).
+    of_mask: fração da silhueta coberta (o recorte por alpha apaga o que sobra da caixa)."""
     h, w = mask.shape
     vv, uu = np.mgrid[0:h, 0:w] + 0.5
     cover = np.zeros((h, w), bool)
@@ -463,7 +504,7 @@ def hexagon_iou(mask, boxes):
             inside &= (bx - ax) * (vv - ay) - (by - ay) * (uu - ax) >= -1e-9
         cover |= inside
     inter = (cover & mask).sum()
-    union = (cover | mask).sum()
+    union = mask.sum() if of_mask else (cover | mask).sum()
     return float(inter) / float(union) if union else 0.0
 
 
@@ -726,13 +767,18 @@ def hull_mesh(mask, rho, target=HULL_CELLS):
     return _expand(P, px, tris, _smooth_normals(P, tris))
 
 
-def sprite_mesh(img, tx, cat, sub):
+def sprite_mesh(img, tx, cat, sub, name='', height=0, surface=False):
     """-> (motor, (pos, pixel, normal)) em listas de triângulos."""
     mask = img != 0
     arch = archetype(tx, cat, sub)
     rho = tx['default_depth_ratio'].get(f'{cat}/{sub}', tx['category_default_depth_ratio'].get(cat, 0.5))
     if arch == 'flat':
         return 'flat', flat_mesh(mask)
+    if cat == 'furniture' and ((sub == 'table' and surface and height >= 2) or re.search(r'\bbench\b', name, re.I)):
+        # mesa, balcão, banco: tampo na altura do tiledata (bancos: centrado no tile)
+        box = fit_top_box(mask, height if surface and height >= 2 else None)
+        if hexagon_iou(mask, [box], of_mask=True) >= 0.8:   # pés abertos de banco ficam de fora
+            return 'tampo', box_mesh(mask, [box])
     if arch == 'box':
         # o fragment shader descarta os pixels transparentes da art: janelas, arcos e recortes ficam
         # vazados e a caixa de arquitetura só precisa acertar a pegada (o assets3d, sem esse corte, pede 0,8)
@@ -915,7 +961,8 @@ def build_statics(src, n, W, H, out_map):
                               area / ((x1 - x0) * (y1 - y0)))
         if cat == 'unknown' and sheight[s] <= 1 and floor_iou(mask) >= 0.85:
             cat, sub = 'architecture', 'floor'  # losango de chão sem nome conhecido (placas das virtudes)
-        eng, mesh = sprite_mesh(img, tx, cat, sub)
+        eng, mesh = sprite_mesh(img, tx, cat, sub, snames[s] if s < len(snames) else '', int(sheight[s]),
+                                bool(int(sflags[s]) & SF_SURFACE))
         meshes[s] = mesh
         sprites[s] = (SK_MESH, None)
         engines[eng] = engines.get(eng, 0) + 1
@@ -1433,6 +1480,14 @@ def build_terrain(src, n, W, H, out_map):
     mat = np.pad(land_to_mat[tid], ((0, ch * CHUNK - H), (0, cw * CHUNK - W)), constant_values=0xFFFF)
     # alturas com borda de 1 tile em todos os lados (tiles -1..64): a superfície suave
     # interpola entre centros de tiles e precisa dos 8 vizinhos de cada tile
+    # void com static abaixo (vão da escada do porão): o cliente não desenha o void, então o chão
+    # vira buraco ali e o que está embaixo aparece; o resto do void segue preto
+    sflags = src.static_tiledata()[0]
+    sx, sy, sz, ssid, _ = src.read_statics(n, W, H)
+    ok = ssid < len(sflags)
+    sx, sy, sz = sx[ok], sy[ok], sz[ok]
+    low = np.isin(tid[sy, sx], list(VOID_LAND)) & (sz < z[sy, sx])
+    mat[sy[low], sx[low]] = HOLE
     zp = np.pad(z, ((1, ch * CHUNK - H + 1), (1, cw * CHUNK - W + 1)), mode='edge')
     exists = np.zeros(cw * ch, np.uint8)
     zmeta = np.zeros(cw * ch * 2, np.int8)

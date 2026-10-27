@@ -201,7 +201,7 @@ in vec3 vNormal;
 out vec4 outColor;
 // cor do material m; kind: 0 textura, 1 art, 2 água, 3 void
 vec3 matCol(uint m, vec2 uv, vec2 gx, vec2 gy, out uint kind) {
-  if (m == 65535u) { kind = 3u; return vec3(0.015, 0.016, 0.02); }
+  if (m >= 65534u) { kind = 3u; return vec3(0.015, 0.016, 0.02); }
   uvec4 d = texelFetch(uMat, ivec2(int(m), 0), 0); // kind, texArray, texLayer, artLayer
   kind = d.x;
   if (d.x == 0u)
@@ -217,6 +217,7 @@ vec3 matCol(uint m, vec2 uv, vec2 gx, vec2 gy, out uint kind) {
 void main() {
   ivec2 t = clamp(ivec2(floor(vLocal)), ivec2(0), ivec2(63));
   uint m = texelFetch(uM, t, 0).r;
+  if (m == 65534u) discard;   // void sobre o porão: o 2D não desenha
   // Enhanced: uv contínuo no mundo (textura repete a cada uRep tiles); clássico: uv por tile
   vec2 uv = uRep > 1.0 ? vWorld.xz / uRep : vLocal - vec2(t);
   vec2 gx = dFdx(vLocal) / max(uRep, 1.0), gy = dFdy(vLocal) / max(uRep, 1.0);
