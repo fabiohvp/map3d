@@ -19,6 +19,18 @@ import convert as C   # noqa: E402
 ZS = 0.144          # 1 unidade de z em tiles (4 px de z / (31.1 px por tile * cos 26,6 graus))
 
 
+def find_client(start):
+    """Sobe a partir de start ate achar a pasta do cliente (a que tem tiledata.mul)."""
+    d = os.path.abspath(start)
+    while True:
+        if os.path.exists(os.path.join(d, 'tiledata.mul')):
+            return d
+        up = os.path.dirname(d)
+        if up == d:
+            raise SystemExit('pasta do cliente nao encontrada: passe --client <pasta com tiledata.mul>')
+        d = up
+
+
 def pack(tris):
     """(pos, pixel, normal) em lista de triangulos -> malha indexada (junta vertices iguais)."""
     P, px, N = tris
@@ -38,9 +50,46 @@ def pack(tris):
     return pos, uv, nrm, idx
 
 
+def roof_tris(mask, thick=0.6):
+    """Telhado = plano inclinado de 1 tile (com beiral) ajustado a silhueta por fit_slope, com espessura.
+    O sprite cobre a face de cima; as demais faces reusam o pixel da borda."""
+    h, w = mask.shape
+    _, e, c, sx, sy = C.fit_slope(mask)
+    cl = [(-e, -e), (1 + e, -e), (1 + e, 1 + e), (-e, 1 + e)]
+
+    def pt(lx, ly, dz=0.0):
+        return np.array([lx, ly, sx * (1 - lx) + sy * (1 - ly) + c + dz])
+
+    def pix(lx, ly):
+        return np.array([22 * (lx - ly) + w / 2, 22 * (lx + ly) - 4 * (sx * (1 - lx) + sy * (1 - ly) + c) + h - 44])
+
+    P, PX, N = [], [], []
+
+    def quad(pts, pxs, out):
+        for a, b, d in ((0, 1, 2), (0, 2, 3)):
+            n = np.cross(pts[b] - pts[a], pts[d] - pts[a])
+            order = (a, b, d) if n @ out >= 0 else (a, d, b)
+            n = np.cross(pts[order[1]] - pts[order[0]], pts[order[2]] - pts[order[0]])
+            n = n / max(np.linalg.norm(n), 1e-9)
+            for k in order:
+                P.append(pts[k]); PX.append(pxs[k]); N.append(n)
+
+    top = [pt(*q) for q in cl]
+    bot = [pt(*q, dz=-thick) for q in cl]
+    pxs = [pix(*q) for q in cl]
+    quad(top, pxs, np.array([0, 0, 1.0]))
+    quad(bot, pxs, np.array([0, 0, -1.0]))
+    cen = np.array([.5, .5, 0.0])
+    for i in range(4):
+        j = (i + 1) % 4
+        mid = (top[i] + top[j]) / 2
+        quad([top[i], top[j], bot[j], bot[i]], [pxs[i], pxs[j], pxs[j], pxs[i]], np.array([mid[0] - cen[0], mid[1] - cen[1], 0.0]))
+    return np.array(P), np.array(PX), np.array(N)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--client', default=os.path.normpath(os.path.join(HERE, '..', '..', '..', '..', '..')))
+    ap.add_argument('--client', default=find_client(HERE))
     ap.add_argument('--only', default='')
     ap.add_argument('--cells', type=int, default=0, help='sobrescreve HULL_CELLS')
     a = ap.parse_args()
@@ -59,8 +108,11 @@ def main():
         if art is None:
             continue
         try:
-            motor, tris = C.sprite_mesh(art, tx, it['cat'], it['sub'], it['name'], int(height[it['id']]),
-                                        bool(int(flags[it['id']]) >> surf & 1))
+            if it['sub'] == 'roof':
+                motor, tris = 'telhado', roof_tris(art != 0)
+            else:
+                motor, tris = C.sprite_mesh(art, tx, it['cat'], it['sub'], it['name'], int(height[it['id']]),
+                                            bool(int(flags[it['id']]) >> surf & 1))
             m = pack(tris)
         except Exception as e:
             print('falhou', it['hex'], it['name'], repr(e)[:80])
