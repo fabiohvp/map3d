@@ -20,6 +20,18 @@ NO_SET = {'architecture', 'terrain', 'effect', 'unknown'}   # pecas de construca
 ATLAS = 2048
 
 
+def find_client(start):
+    """Sobe a partir de start ate achar a pasta do cliente (a que tem tiledata.mul)."""
+    d = os.path.abspath(start)
+    while True:
+        if os.path.exists(os.path.join(d, 'tiledata.mul')):
+            return d
+        up = os.path.dirname(d)
+        if up == d:
+            raise SystemExit('pasta do cliente nao encontrada: passe --client <pasta com tiledata.mul>')
+        d = up
+
+
 def palette(rgba, k=3):
     px = rgba[rgba[..., 3] > 0][:, :3].astype(np.float32)
     lit = px[px.max(1) > 60]          # descarta o contorno preto da art
@@ -42,7 +54,7 @@ def palette(rgba, k=3):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--client', default=os.path.normpath(os.path.join(HERE, '..', '..', '..', '..', '..')))
+    ap.add_argument('--client', default=find_client(HERE))
     ap.add_argument('--min-sets', type=int, default=8)
     a = ap.parse_args()
     out = os.path.join(HERE, 'data')
