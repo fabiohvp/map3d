@@ -219,7 +219,7 @@ async function renderPage() {
       const ps = e.st.pieces.map(p => byHex[p.id]);
       thumbs = ps.map(p => `<figure>${thumb(p)}<figcaption>0x${p.hex}</figcaption></figure>`).join('');
       title = cur ? cur.name : e.st.name; tag = `<span class="tag set">${ids.length} peças → 1</span>`;
-      meta = `${e.st.cat}/${e.st.sub} · ${e.st.uses}× no mapa${cur ? ' · modelado à mão' : ''}`;
+      meta = `${e.st.cat}/${e.st.sub} · ${e.st.uses}× no mapa${cur ? ' · modelado à mão' : model.userData.templ ? ` · modelo à mão (${model.userData.templ})` : ''}`;
     } else {
       const it = e.it;
       const cur = curatedKeys.get(it.hex);
