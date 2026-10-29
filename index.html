@@ -562,7 +562,8 @@ function clipGables(A, B, n0, count) {
     if (!(ht > 0)) continue;
     const x = a & 63, y = (a >> 6) & 63, z = ((a >> 12) & 255) - 128, cz = a >>> 26;
     let top = Infinity;
-    if (roof.has(a & 4095)) {
+    // peça de até 24 z (parede, faixa de empena); mais alta é chaminé/lareira que atravessa o telhado de propósito
+    if (ht <= 24 && roof.has(a & 4095)) {
       // face mais baixa sob a pegada (cantos e centro, dentro do tile): peça grossa não fura o lado baixo da água
       const cl = (v) => Math.min(1, Math.max(0, v)), X0 = cl(box[o]), X1 = cl(box[o + 1]), Y0 = cl(box[o + 2]), Y1 = cl(box[o + 3]);
       let h = Infinity;
