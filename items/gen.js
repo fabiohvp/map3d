@@ -1509,7 +1509,7 @@ function glowOrb(c) { const g = new THREE.Group(); sphere(g, .18, M('plain', c.c
 
 // regras por nome: a primeira que casa vence (so valem fora de arquitetura basica: piso, parede, escada...)
 const BY_NAME = [
-  [/bolts?(%s%)? of cloth/, c => clothBolt(c)],
+  [/bolts?(%s%)? of cloth/, c => clothBolt(c)], [/flower ?pot/, c => pottedPlant(c)],
   [/fallen log|\btree trunk\b/, c => fallenLog(c)], [/stalagmite|stalactite/, c => stalagmites(c)],
   [/chest of drawers|dresser|armoire|wardrobe|cupboard/, c => FURN.cabinet(c)], [/display case/, c => vitrine(c, .96, .8)],
   [/\bcounter\b/, c => { const g = new THREE.Group(); OVR.wood = ratio(woodTone([c.it]) || c.c0, '#8a5a32'); try { g.add(hmCounter({ L: .98 })); } finally { OVR.wood = null; } return g; }],
@@ -1547,6 +1547,25 @@ const LOOSE = [
 ];
 function byLoose(c) { for (const [rx, fn] of LOOSE) if (rx.test(c.n)) return fn(c); return null; }
 function spikes(c) { const g = new THREE.Group(), m = M('metal', '#8d939a'); box(g, .9, .04, .9, M('stone', c.c0), 0, 0, 0); for (let i = 0; i < 9; i++) g.add(place(new THREE.Mesh(new THREE.ConeGeometry(.04, .25, 5), m), -.3 + (i % 3) * .3, .16, -.3 + Math.floor(i / 3) * .3)); return g; }
+// vaso de barro com planta: vaso torneado com borda, terra e folhas compridas em leque (altura pela art)
+function pottedPlant(c) {
+  const g = new THREE.Group(), pal = c.it.pal || [];
+  const clay = pal.find(hx => { const o = hslOf(hx); return o.h > .02 && o.h < .12 && o.s > .35 && o.l > .2; }) || '#a2602a';
+  const leaf = greenOf(pal) || '#3f6e34', H = clamp((c.it.hp - 14) / 46, .35, 1.4), ph = clamp(H * .4, .2, .34), r = clamp(c.it.w / 44 * .2, .12, .2);
+  const pot = M('plain', clay, { rough: .75 });
+  lathe(g, [[.001, 0], [r * .7, 0], [r * .78, .02], [r, ph * .85], [r * 1.12, ph * .88], [r * 1.12, ph], [r * .95, ph], [r * .9, ph * .92], [.001, ph * .92]], pot, 0, 0, 0, 20);
+  const soil = place(new THREE.Mesh(new THREE.CircleGeometry(r * .9, 16), M('noisy', '#3b2a1a')), 0, ph * .9, 0); soil.rotation.x = -Math.PI / 2; g.add(soil);
+  const lf = [M('noisy', leaf, { side: THREE.DoubleSide }), M('noisy', shade(leaf, .75), { side: THREE.DoubleSide }), M('noisy', shade(leaf, 1.2), { side: THREE.DoubleSide })];
+  const n = H > .7 ? 22 : 12, L = H - ph;
+  for (let i = 0; i < n; i++) {                                                     // folha: lamina estreita arqueada
+    const len = L * (.55 + c.r() * .5), geo = new THREE.PlaneGeometry(.035, len, 1, 6), p = geo.attributes.position;
+    for (let k = 0; k < p.count; k++) { const t = p.getY(k) / len + .5; p.setX(k, p.getX(k) * (1 - t * .8)); p.setZ(k, t * t * len * .35); p.setY(k, t * len); }
+    geo.computeVertexNormals();
+    const m = place(new THREE.Mesh(geo, lf[i % 3]), (c.r() - .5) * r * .8, ph * .9, (c.r() - .5) * r * .8);
+    m.rotation.set(-.15 - c.r() * .35, i / n * 6.28 + c.r() * .4, 0, 'YXZ'); g.add(m);
+  }
+  return g;
+}
 // rolo de pano em pe, levemente inclinado, na cor mais saturada da paleta
 function clothBolt(c) {
   const g = new THREE.Group(), col = [...c.it.pal].sort((a, b) => hslOf(b).s - hslOf(a).s)[0] || c.c0;

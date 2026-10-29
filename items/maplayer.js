@@ -18,9 +18,10 @@ const hexOf = g => g.toString(16).toUpperCase().padStart(4, '0');
 const ROTATED = [[[0xE8E, 0xE8F, 0xE90], [0xE8D, 0xE8C, 0xE8B]], [[0xE94, 0xE95, 0xE96], [0xE93, 0xE92, 0xE91]]];
 const CANNON_DIR = { 0xE8E: -1, 0xE94: 1 };      // boca do canhao de muralha: oeste (-x) / leste (+x)
 const TRUNK = /\b(tree|trunk)\b/, LEAVES = /\b(leaves|needles|foliage)\b/;   // pecas da arvore no mesmo tile
-// moveis de varias pecas (o gerador faz um por tile), palha no chao, arte de parede (quadro, banner, tapecaria),
+const FLOOR = /\b(hay|straw)\b/;                 // decalque de chao com a art deitada (floorDecal)
+// moveis de varias pecas (o gerador faz um por tile), arte de parede (quadro, banner, tapecaria),
 // trepadeira e ossos (classificados como arbusto e lingote), vaso e ervas penduradas
-const MESH_NAME = /display case|counter|showcase|banner|tapestr|painting|portrait|\b(table|bench|desk|hay|straw|vines?|ivy|bones?|bone pile|gravestone|tombstone|headstone|potted|herbs)\b/;
+const MESH_NAME = /display case|counter|showcase|banner|tapestr|painting|portrait|\b(table|bench|desk|vines?|ivy|bones?|bone pile|gravestone|tombstone|headstone|potted|herbs)\b/;
 const LYING = /^(weapon|armor|clothing|jewelry|consumable)$/;   // deitados ou expostos num movel: vao para a malha
 const SB = 5;                                   // sprBox por sprite: x0, x1, y0, y1, topo (z)
 const PS = 4;                                    // place por instancia: x, altura (z), y, giro
@@ -107,10 +108,39 @@ export async function createItemLayer(gl, canvas) {
     });
     return [...groups.values()].map(({ mat, geos }) => ({ mat, geo: geos.length > 1 ? mergeGeometries(geos) : geos[0], mesh: null, cap: 0 }));
   }
+  // decalque de chao: a art do atlas de items/ deitada no tile, pela projecao do viewer (z = 0):
+  // pixel = (22 (x - y) + w/2, 22 (x + y) + hp - 44), com x, y a partir do canto do tile
+  const atlasTex = new Map();
+  function atlas(i) {
+    if (!atlasTex.has(i)) {
+      const t = new THREE.TextureLoader().load(new URL(`data/atlas_${i}.png`, import.meta.url).href);
+      t.colorSpace = THREE.SRGBColorSpace;
+      t.magFilter = t.minFilter = THREE.NearestFilter;
+      t.generateMipmaps = false;
+      atlasTex.set(i, t);
+    }
+    return atlasTex.get(i);
+  }
+  function floorDecal(it) {
+    const { w, hp } = it, S = 2048, pos = [], uv = [];
+    const s0 = -w / 44, s1 = w / 44, t0 = (44 - hp) / 22, t1 = 2;   // s = x - y, t = x + y cobrindo a art
+    for (const [s, t] of [[s0, t0], [s1, t1], [s1, t0], [s0, t0], [s0, t1], [s1, t1]]) {   // face para cima
+      pos.push((t + s) / 2, .6 * ZU, (t - s) / 2);                  // acima do piso (malha de ~0,4 z)
+      uv.push((it.ax + 22 * s + w / 2) / S, 1 - (it.ay + 22 * t + hp - 44) / S);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(pos.map((_, i) => i % 3 === 1 ? 1 : 0), 3));
+    const g = new THREE.Group();
+    g.add(new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: atlas(it.atlas), alphaTest: .5, side: THREE.DoubleSide, roughness: 1 })));
+    return g;
+  }
   function build(key) {
     let obj;
     try {
-      if (key[0] === 'T') {                                // arvore: tronco + folhas do tile, altura da malha (z)
+      if (key[0] === 'F') obj = floorDecal(byHex[hexOf(+key.slice(1))]);
+      else if (key[0] === 'T') {                                // arvore: tronco + folhas do tile, altura da malha (z)
         const [t, l, top] = key.slice(1).split(',').map(Number);
         obj = mapTree([t, l].filter(Boolean).map(g => byHex[hexOf(g)]), Math.max(1, top * ZU * .95));
       } else if (key[0] === 's') {
@@ -182,6 +212,9 @@ export async function createItemLayer(gl, canvas) {
       }
       const out = new Map();
       const push = (key, x, y, z, rot = 0) => { if (!out.has(key)) out.set(key, []); out.get(key).push(x, z, y, rot); };
+      // palha solta: pontos da art deitados no chao antes dos conjuntos (pares de palha viravam plantacao);
+      // a malha do conversor e uma placa em pe, quase invisivel de cima
+      for (const e of list) if (!e.used && FLOOR.test(byHex[hexOf(e.g)].name || '')) { e.used = true; push('F' + e.g, e.x, e.y, e.z); }
       for (const e of list) {                                  // 1a passada: conjuntos a partir da ancora
         if (e.used || !byAnchor.has(e.g)) continue;
         for (const si of byAnchor.get(e.g)) {
