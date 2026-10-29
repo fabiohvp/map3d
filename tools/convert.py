@@ -328,6 +328,7 @@ HULL_CELLS = 32          # células da grade do casco (o assets3d usa 420; aqui 
 CARD_CELLS = 16          # casco fino: o recorte da art (alpha) já dá a silhueta
 FLAT_CELLS = 12
 FLAT_THICK = 0.4         # espessura do slab deitado, em z
+DECAL_THICK = 1.0        # slab de entulho/tapete sobre o piso: acima da laje do piso no mesmo z
 MESH_CLASSES = (6, 36, 96, 192, 384, 768, 1536, 3072)   # vértices por instância de cada lote; 0 = telhado
 MESH_MAX = MESH_CLASSES[-1]
 
@@ -1133,7 +1134,7 @@ PLANT_NAMES = (r'bramble|sapling|rushes|\bweeds?\b|cattail|fan plant|elephant ea
                r'\bflowers?\b|mushroom|\bcrops?\b|wheat|\bcorn\b|cotton|\bflax|hay sheave|lettuce|cabbage|'
                r'turnip|onion|carrot|pumpkin plant|\bvines?\b|\bivy\b|orfluer|cactus|\bhedge')
 FLAT_NAMES = (r'lill?y pads?|water lill?y|\bacid\b|garbage|refuse|debris|spilled|wood curls|\bpuddle|'
-              r'^\s*blood\s*$|blood smear|blood pool')
+              r'^\s*blood\s*$|blood smear|blood pool|damaged books')
 LOG_NAMES = r'fallen log|sunken log|\btree trunk|\blog\b'
 
 
@@ -1348,10 +1349,12 @@ def sprite_mesh(img, tx, cat, sub, name='', height=0, surface=False):
     mask = img != 0
     arch = archetype(tx, cat, sub)
     rho = tx['default_depth_ratio'].get(f'{cat}/{sub}', tx['category_default_depth_ratio'].get(cat, 0.5))
-    if (arch == 'flat' or (surface and height == 0 and (cat != 'architecture' or sub == 'floor'))
-            or (sub == 'water' and re.fullmatch(r'\s*water\s*', name, re.I)) or re.search(FLAT_NAMES, name, re.I)):
-        # tapetes, pentagramas, pisos, água, vitórias-régias, entulho: deitam no chão (ou na água)
-        return 'flat', flat_mesh(mask)
+    floor = ((surface and height == 0 and (cat != 'architecture' or sub == 'floor'))
+             or (sub == 'water' and re.fullmatch(r'\s*water\s*', name, re.I)))
+    if arch == 'flat' or floor or re.search(FLAT_NAMES, name, re.I):
+        # tapetes, pentagramas, pisos, água, vitórias-régias, entulho: deitam no chão (ou na água); o que
+        # fica sobre o piso (entulho, livros, tapete) é mais grosso que a laje dele, senão briga de profundidade
+        return 'flat', flat_mesh(mask, FLAT_THICK if floor else DECAL_THICK)
     if (re.search(PLANT_NAMES, name, re.I) or cat == 'vegetation' and sub in ('flower', 'mushroom', 'crop')
             or cat == 'terrain' and sub == 'ground' and height <= 2):
         return 'planta', plant_mesh(mask, height)
@@ -1625,9 +1628,13 @@ def build_statics(src, n, W, H, out_map):
     gx, gy, z, sid, hue = gx[first], gy[first], z[first], sid[first], hue[first]
     print(f'  {total_raw} itens, {len(sid)} após NoDraw e duplicatas')
 
-    # tie = ordem do item dentro da célula (ordem do arquivo), usado para desempatar profundidade
+    # tie = ordem de desenho do item dentro da célula, usado para desempatar profundidade. Como no cliente:
+    # z, −1 se Background (piso), +1 se tem altura; empate fica na ordem do arquivo (entulho listado antes do
+    # piso no mesmo z é desenhado por cima dele)
     cell = gy * W + gx
-    order = np.argsort(cell, kind='stable')
+    sf = sflags[sid]
+    pri = z.astype(np.int64) - ((sf & np.uint64(SF_BACKGROUND)) != 0) + (sheight[sid] > 0)
+    order = np.lexsort((np.arange(len(cell)), pri, cell))
     cs = cell[order]
     start = np.r_[0, np.nonzero(np.diff(cs))[0] + 1]
     rank = np.arange(len(cs)) - np.repeat(start, np.diff(np.r_[start, len(cs)]))

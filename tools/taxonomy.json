@@ -190,7 +190,7 @@
   [
    "furniture",
    "cabinet",
-   "cabinet|armoire|wardrobe|dresser|bookcase|bookshelf|\\bshelf|\\bshelves|drawer|hutch|cupboard|\\bcase\\b"
+   "cabinet|armoire|wardrobe|dresser|bookcase|bookshelf|\\bshelf|\\bshelves|drawer|hutch|cupboard|\\bcase\\b|broken furniture"
   ],
   [
    "light",
