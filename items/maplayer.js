@@ -36,10 +36,10 @@ const TRUNK = /^(?!potted).*\b(tree|trunk)\b/, LEAVES = /\b(leaves|needles|folia
 const FLOOR = /\b(hay|straw)\b/;                 // decalque de chao com a art deitada (floorDecal)
 // moveis de varias pecas (o gerador faz um por tile), arte de parede (quadro, banner, tapecaria),
 // trepadeira e ossos (classificados como arbusto e lingote), vaso e ervas penduradas, mastro/verga/vela de navio
-const MESH_NAME = /display case|counter|showcase|banner|tapestr|painting|portrait|\b(table|bench|desk|vines?|ivy|bones?|bone pile|gravestone|tombstone|headstone|potted cactus|herbs|spar|masts?|sails?|rigging)\b/;
+const MESH_NAME = /display case|counter|showcase|banner|tapestr|painting|portrait|\b(table|bench|desk|vines?|ivy|bones?|bone pile|gravestone|tombstone|headstone|potted cactus|herbs|spar|masts?|sails?|rigging|broken|books)\b/;
 const LYING = /^(weapon|armor|clothing|jewelry|consumable)$/;   // deitados ou expostos num movel: vao para a malha
 const SB = 5;                                   // sprBox por sprite: x0, x1, y0, y1, topo (z)
-const PS = 4;                                    // place por instancia: x, altura (z), y, giro
+const PS = 5;                                    // place por instancia: x, altura (z), y, giro, altura alvo (z; 0 = do modelo)
 
 export async function createItemLayer(gl, canvas) {
   const data = await (await fetch(new URL('data/items.json', import.meta.url))).json();
@@ -176,7 +176,8 @@ export async function createItemLayer(gl, canvas) {
         obj = cur ? cur.build() : THRONE[it.id] !== undefined ? throne() : buildOne(it, null);
       }
     } catch (e) { console.warn('modelo falhou', key, e); obj = new THREE.Group(); }
-    return { parts: flatten(obj) };
+    const parts = flatten(obj);
+    return { parts, h: Math.max(.05, ...parts.map(p => (p.geo.computeBoundingBox(), p.geo.boundingBox.max.y))) };
   }
   const tmp = new THREE.Matrix4(), q = new THREE.Quaternion(), v = new THREE.Vector3(), one = new THREE.Vector3(1, 1, 1);
   function apply(key) {
@@ -192,7 +193,8 @@ export async function createItemLayer(gl, canvas) {
       if (!p.mesh) continue;
       for (let i = 0, o = 0; i < n; i++, o += PS) {
         q.setFromAxisAngle(UP, pos[o + 3]);
-        p.mesh.setMatrixAt(i, tmp.compose(v.set(pos[o], pos[o + 1] * ZU, pos[o + 2]), q, one));
+        const k = pos[o + 4] ? Math.min(2.2, Math.max(.6, pos[o + 4] * ZU / md.h)) : 1;   // escala uniforme pela altura da art
+        p.mesh.setMatrixAt(i, tmp.compose(v.set(pos[o], pos[o + 1] * ZU, pos[o + 2]), q, one.set(k, k, k)));
       }
       p.mesh.count = n;
       p.mesh.visible = n > 0;
@@ -235,7 +237,7 @@ export async function createItemLayer(gl, canvas) {
         cells.get(k).push(e);
       }
       const out = new Map();
-      const push = (key, x, y, z, rot = 0) => { if (!out.has(key)) out.set(key, []); out.get(key).push(x, z, y, rot); };
+      const push = (key, x, y, z, rot = 0, tgt = 0) => { if (!out.has(key)) out.set(key, []); out.get(key).push(x, z, y, rot, tgt); };
       // palha solta: pontos da art deitados no chao antes dos conjuntos (pares de palha viravam plantacao);
       // a malha do conversor e uma placa em pe, quase invisivel de cima
       for (const e of list) if (!e.used && FLOOR.test(byHex[hexOf(e.g)].name || '')) { e.used = true; push('F' + e.g, e.x, e.y, e.z); }
@@ -287,7 +289,8 @@ export async function createItemLayer(gl, canvas) {
       for (const e of list) {
         if (e.used) continue;
         const b = sprBox && sprBox.subarray(e.s * SB, e.s * SB + SB), small = b && b[1] - b[0] < .8 && b[3] - b[2] < .8;
-        push('g' + e.g, e.x + (small ? cl((b[0] + b[1]) / 2) : .5), e.y + (small ? cl((b[2] + b[3]) / 2) : .5), e.z, THRONE[e.g] || 0);
+        push('g' + e.g, e.x + (small ? cl((b[0] + b[1]) / 2) : .5), e.y + (small ? cl((b[2] + b[3]) / 2) : .5), e.z, THRONE[e.g] || 0,
+          byHex[hexOf(e.g)].sub === 'cabinet' && b ? b[4] : 0);   // armario/estante: altura da malha
       }
       for (const k of place.keys()) if (!out.has(k)) out.set(k, []);
       place = out;
@@ -297,6 +300,11 @@ export async function createItemLayer(gl, canvas) {
       }
     },
     keepData,
+    // decalque plano de chao (sangue, detritos, tapete...): nao e piso de arquitetura nem terreno
+    lift(g, top) {
+      const it = byHex[hexOf(g)];
+      return top < 1 && !!it && it.cat !== 'architecture' && it.cat !== 'terrain';
+    },
     // monta modelos pendentes ate estourar o orcamento (ms) do quadro
     tick(budget) {
       const t0 = performance.now();
