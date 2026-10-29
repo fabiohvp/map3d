@@ -542,6 +542,23 @@ def fit_boxes(mask, corners):
     return best[1], best[0]
 
 
+def seat_back_boxes(mask):
+    """Cadeira: assento na pegada da caixa medida e encosto fino, mais alto, na borda oeste ou norte;
+    alturas e espessura pela melhor IoU. -> (caixas, IoU)."""
+    x0, y0, x1, y1, _ = fit_box(mask)
+    best = (-1.0, None)
+    for side in ('w', 'n'):
+        for t in (0.15, 0.25, 0.35):
+            back = (x0, y0, x0 + t, y1) if side == 'w' else (x0, y0, x1, y0 + t)
+            for hb in np.arange(4.0, 24.0):
+                for hs in np.arange(1.0, min(hb, 12.0)):
+                    boxes = [(x0, y0, x1, y1, hs), back + (hb,)]
+                    iou = hexagon_iou(mask, boxes)
+                    if iou > best[0]:
+                        best = (iou, boxes)
+    return best[1], best[0]
+
+
 def box_mesh(mask, boxes):
     """6 faces por caixa; oeste, norte e base não aparecem na art e reusam o pixel da face oposta."""
     h, w = mask.shape
@@ -1421,8 +1438,13 @@ def sprite_mesh(img, tx, cat, sub, name='', height=0, surface=False):
         need = {'architecture/stairs': 0.6, 'furniture/bed': 0.6}.get(kind, 0.5 if kind in WALL_LIKE else 0.8)
         if iou >= need:
             return 'box' if len(boxes) == 1 else 'canto', box_mesh(mask, boxes)
+        if kind == 'furniture/chair' and re.search(r'\bcovered\b', name, re.I):
+            # cadeira coberta por lençol: a caixa única fica um cubo baixo; assento + encosto alto
+            boxes, iou = seat_back_boxes(mask)
+            if iou >= 0.7 and hexagon_iou(mask, boxes, of_mask=True) >= 0.85:
+                return 'cadeira', box_mesh(mask, boxes)
         if kind == 'furniture/cabinet' or re.search(r'\bcovered\b', name, re.I):
-            # cômoda com espelho/relógio, cadeira coberta por lençol: o casco inflado gira com a câmera; vale a
+            # cômoda com espelho/relógio: o casco inflado gira com a câmera; vale a
             # caixa de melhor IoU entre as inclinações da pegada se ela cobre quase toda a silhueta
             x0, y0, x1, y1 = _bbox(mask)
             sw = (x1 - x0) / HT
