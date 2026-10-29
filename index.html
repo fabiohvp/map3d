@@ -683,8 +683,12 @@ async function setStaticsMode(mode) {
 function keepData(c, L) {
   const kA = [], kB = [], kN = c.sN.map(() => 0);
   for (let k = 1, i = c.sN[0]; k < c.sN.length; i += c.sN[k++])
-    for (let j = i; j < i + c.sN[k]; j++)
-      if (L.keepData(statics.sprG[c.sB[j] & 0xFFFF], statics.sprBox[(c.sB[j] & 0xFFFF) * 5 + 4], c.sS[j], c.sB[j] >>> 16)) { kA.push(c.sA[j]); kB.push(c.sB[j]); kN[k]++; }
+    for (let j = i; j < i + c.sN[k]; j++) {
+      const g = statics.sprG[c.sB[j] & 0xFFFF], top = statics.sprBox[(c.sB[j] & 0xFFFF) * 5 + 4];
+      if (!L.keepData(g, top, c.sS[j], c.sB[j] >>> 16)) continue;
+      // decalque plano no z do piso: tie máximo (+0,6 z no shader) para não ficar sob as lajotas
+      kA.push(L.lift(g, top) ? ((c.sA[j] & ~(15 << 20)) | (15 << 20)) >>> 0 : c.sA[j]); kB.push(c.sB[j]); kN[k]++;
+    }
   const buf = new Uint32Array(kA.length * 2);
   buf.set(kA); buf.set(kB, kA.length);
   c.kBuf = gl.createBuffer();
