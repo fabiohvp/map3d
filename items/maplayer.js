@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { ITEMS } from './models.js';
-import { buildOne, buildSet, mapTree, fieldCannon } from './gen.js';
+import { buildOne, buildSet, mapTree, fieldCannon, settle, tableRun, throne } from './gen.js';
 import { TEX } from './textures.js';
 
 TEX.size = 256;
@@ -16,12 +16,16 @@ const UP = new THREE.Vector3(0, 1, 0);
 const hexOf = g => g.toString(16).toUpperCase().padStart(4, '0');
 // canhoes: o oeste/leste (ao longo de x) tem conjunto; o norte/sul (ao longo de y) e o mesmo canhao girado
 const ROTATED = [[[0xE8E, 0xE8F, 0xE90], [0xE8D, 0xE8C, 0xE8B]], [[0xE94, 0xE95, 0xE96], [0xE93, 0xE92, 0xE91]]];
-const CANNON_DIR = { 0xE8E: -1, 0xE94: 1 };      // boca do canhao de muralha: oeste (-x) / leste (+x)
-const TRUNK = /\b(tree|trunk)\b/, LEAVES = /\b(leaves|needles|foliage)\b/;   // pecas da arvore no mesmo tile
+const CANNON_DIR = { 0xE8E: -1, 0xE94: 1 };
+const SETTLE = { 0xB94: 'y', 0xB92: 'x' };       // banco de encosto alto (2 pecas): ao longo de y / de x
+const SETTLE_IDS = new Set([0xB91, 0xB92, 0xB93, 0xB94]);
+const TABLE = /^table$/;                         // pecas de mesa vizinhas viram uma mesa de cavaletes (tableRun)
+const THRONE = { 0xB32: 0, 0xB33: Math.PI / 2 }; // trono: giro do modelo (virado para +y / +x)      // boca do canhao de muralha: oeste (-x) / leste (+x)
+const TRUNK = /^(?!potted).*\b(tree|trunk)\b/, LEAVES = /\b(leaves|needles|foliage)\b/;   // pecas da arvore no mesmo tile
 const FLOOR = /\b(hay|straw)\b/;                 // decalque de chao com a art deitada (floorDecal)
 // moveis de varias pecas (o gerador faz um por tile), arte de parede (quadro, banner, tapecaria),
 // trepadeira e ossos (classificados como arbusto e lingote), vaso e ervas penduradas
-const MESH_NAME = /display case|counter|showcase|banner|tapestr|painting|portrait|\b(table|bench|desk|vines?|ivy|bones?|bone pile|gravestone|tombstone|headstone|potted|herbs)\b/;
+const MESH_NAME = /display case|counter|showcase|banner|tapestr|painting|portrait|\b(table|bench|desk|vines?|ivy|bones?|bone pile|gravestone|tombstone|headstone|potted cactus|herbs)\b/;
 const LYING = /^(weapon|armor|clothing|jewelry|consumable)$/;   // deitados ou expostos num movel: vao para a malha
 const SB = 5;                                   // sprBox por sprite: x0, x1, y0, y1, topo (z)
 const PS = 4;                                    // place por instancia: x, altura (z), y, giro
@@ -140,16 +144,20 @@ export async function createItemLayer(gl, canvas) {
     let obj;
     try {
       if (key[0] === 'F') obj = floorDecal(byHex[hexOf(+key.slice(1))]);
+      else if (key[0] === 'R') {                            // mesa de n tiles ao longo de x (giro na instancia)
+        const [n, g] = key.slice(1).split(',').map(Number);
+        obj = tableRun([byHex[hexOf(g)]], n);
+      }
       else if (key[0] === 'T') {                                // arvore: tronco + folhas do tile, altura da malha (z)
         const [t, l, top] = key.slice(1).split(',').map(Number);
         obj = mapTree([t, l].filter(Boolean).map(g => byHex[hexOf(g)]), Math.max(1, top * ZU * .95));
       } else if (key[0] === 's') {
         const { st, ids } = SETS[+key.slice(1)];
         const cur = curated.get(ids.map(hexOf).sort().join('|'));
-        obj = cur ? cur.build() : CANNON_DIR[ids[0]] ? fieldCannon(CANNON_DIR[ids[0]]) : buildSet(st, id => byHex[id], () => null);
+        obj = cur ? cur.build() : CANNON_DIR[ids[0]] ? fieldCannon(CANNON_DIR[ids[0]]) : SETTLE[ids[0]] ? settle(SETTLE[ids[0]]) : buildSet(st, id => byHex[id], () => null);
       } else {
         const it = byHex[hexOf(+key.slice(1))], cur = curated.get(it.hex);
-        obj = cur ? cur.build() : buildOne(it, null);
+        obj = cur ? cur.build() : THRONE[it.id] !== undefined ? throne() : buildOne(it, null);
       }
     } catch (e) { console.warn('modelo falhou', key, e); obj = new THREE.Group(); }
     return { parts: flatten(obj) };
@@ -186,7 +194,7 @@ export async function createItemLayer(gl, canvas) {
     let k = kept.get(g);
     if (k === undefined) {
       const it = byHex[hexOf(g)];
-      k = !it ? 2 : it.cat === 'architecture' || it.cat === 'terrain' || it.cat === 'unknown' || it.cat === 'effect' || it.sub === 'painting' || MESH_NAME.test(it.name || '') ? 2
+      k = !it ? 2 : it.cat === 'architecture' || it.cat === 'terrain' || it.cat === 'unknown' || it.sub === 'painting' || (!SETTLE_IDS.has(g) && THRONE[g] === undefined && !TABLE.test(it.name || '') && (it.cat === 'effect' || MESH_NAME.test(it.name || ''))) ? 2
         : LYING.test(it.cat) ? 1 : 0;
       kept.set(g, k);
     }
@@ -215,6 +223,22 @@ export async function createItemLayer(gl, canvas) {
       // palha solta: pontos da art deitados no chao antes dos conjuntos (pares de palha viravam plantacao);
       // a malha do conversor e uma placa em pe, quase invisivel de cima
       for (const e of list) if (!e.used && FLOOR.test(byHex[hexOf(e.g)].name || '')) { e.used = true; push('F' + e.g, e.x, e.y, e.z); }
+      // mesas: pecas vizinhas no mesmo z formam uma mesa so ao longo de y (ou de x), a partir da primeira peca
+      const isT = o => !o.used && TABLE.test(byHex[hexOf(o.g)].name || '');
+      const tAt = (x, y, z) => (cells.get(x * 65536 + y) || []).find(o => isT(o) && Math.abs(o.z - z) <= 1);
+      for (const e of list) {
+        if (!isT(e) || tAt(e.x, e.y - 1, e.z)) continue;
+        let run = [e], axis = 'y';
+        for (let o; (o = tAt(e.x, e.y + run.length, e.z));) run.push(o);
+        if (run.length === 1) {
+          if (tAt(e.x - 1, e.y, e.z)) continue;
+          axis = 'x';
+          for (let o; (o = tAt(e.x + run.length, e.y, e.z));) run.push(o);
+        }
+        run.forEach(o => o.used = true);
+        const n = run.length;
+        push(`R${n},${e.g}`, axis === 'x' ? e.x + n / 2 : e.x + .5, axis === 'y' ? e.y + n / 2 : e.y + .5, e.z, axis === 'y' ? Math.PI / 2 : 0);
+      }
       for (const e of list) {                                  // 1a passada: conjuntos a partir da ancora
         if (e.used || !byAnchor.has(e.g)) continue;
         for (const si of byAnchor.get(e.g)) {
@@ -247,7 +271,7 @@ export async function createItemLayer(gl, canvas) {
       for (const e of list) {
         if (e.used) continue;
         const b = sprBox && sprBox.subarray(e.s * SB, e.s * SB + SB), small = b && b[1] - b[0] < .8 && b[3] - b[2] < .8;
-        push('g' + e.g, e.x + (small ? cl((b[0] + b[1]) / 2) : .5), e.y + (small ? cl((b[2] + b[3]) / 2) : .5), e.z);
+        push('g' + e.g, e.x + (small ? cl((b[0] + b[1]) / 2) : .5), e.y + (small ? cl((b[2] + b[3]) / 2) : .5), e.z, THRONE[e.g] || 0);
       }
       for (const k of place.keys()) if (!out.has(k)) out.set(k, []);
       place = out;

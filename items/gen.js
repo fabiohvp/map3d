@@ -652,6 +652,71 @@ export function fieldCannon(dir = 1) {
   g.traverse(o => { if (o.isMesh) o.castShadow = o.receiveShadow = true; });
   return g;
 }
+// banco de encosto alto (2 tiles): assento com saia, encosto de molduras e almofadas entalhadas, bracos nas
+// pontas. Comprimento ao longo de x e encosto em -z; axis 'y': ao longo de z com o encosto em -x
+export function settle(axis = 'x', col = '#6a4a2c') {
+  const out = new THREE.Group(), g = new THREE.Group(); out.add(g);
+  if (axis === 'y') g.rotation.y = Math.PI / 2;
+  g.scale.set(1, 1.35, 1.3);                                                        // altura/fundura da art (encosto ~70% da parede)
+  const wd = M('wood', col), dk = M('wood', shade(col, .68)), lt = M('wood', shade(col, 1.18));
+  const L = 1.9, D = .5, sh = .46, bh = 1.45, z0 = -D / 2;
+  box(g, L, .07, D, wd, 0, sh - .07, 0);                                            // assento
+  box(g, L - .04, sh - .14, .05, dk, 0, .07, D / 2 - .05);                          // saia da frente
+  for (const x of [-L / 2 + .05, L / 2 - .05]) {                                    // bracos/laterais recortados
+    const s = new THREE.Shape(); s.moveTo(-D / 2, 0); s.lineTo(D / 2 - .02, 0); s.lineTo(D / 2 - .02, sh + .22); s.quadraticCurveTo(D / 2 - .1, sh + .3, D / 2 - .2, sh + .26);
+    s.lineTo(-D / 2 + .08, sh + .34); s.lineTo(-D / 2, bh); s.closePath();
+    const m = place(new THREE.Mesh(new THREE.ExtrudeGeometry(s, { depth: .07, bevelEnabled: false }), wd), x - .035, 0, 0); m.rotation.y = Math.PI / 2; g.add(m);
+  }
+  box(g, L, bh - sh, .07, dk, 0, sh, z0 + .035);                                   // fundo do encosto
+  box(g, L + .04, .08, .12, wd, 0, bh - .04, z0 + .05);                             // coroa
+  box(g, L, .06, .1, wd, 0, sh + .02, z0 + .07);                                    // travessa de baixo
+  const n = 6, pw = (L - .1) / n;
+  for (let i = 0; i < n; i++) {                                                     // molduras e almofadas do encosto
+    const x = -L / 2 + .05 + pw * (i + .5);
+    box(g, .04, bh - sh - .12, .1, wd, x - pw / 2 + .02, sh + .06, z0 + .07);
+    box(g, pw - .1, (bh - sh) * .52, .03, lt, x, sh + .2, z0 + .085);
+    box(g, pw - .18, .05, .04, dk, x, sh + .2 + (bh - sh) * .6, z0 + .09);
+  }
+  return out;
+}
+// mesa de cavaletes do mapa: n tiles ao longo de x, tampo de tabuas, cavaletes em X nas pontas e travessa
+export function tableRun(items, n) {
+  const g = new THREE.Group(), col = shade(woodTone(items) || '#8a6238', .78), wd = M('wood', col), dk = M('wood', shade(col, .7));
+  const L = n - .06, W = .78, H = .84;
+  box(g, L, .07, W, wd, 0, H - .07, 0);                                             // tampo
+  box(g, L - .1, .1, W - .12, dk, 0, H - .17, 0);                                   // saia
+  const ends = n > 1 ? [-L / 2 + .3, L / 2 - .3] : [0];
+  for (const x of ends) {                                                           // cavalete: duas pernas em X e pe
+    for (const s of [-1, 1]) {
+      const leg = place(new THREE.Mesh(new THREE.BoxGeometry(.07, H - .14, .07), dk), x, (H - .14) / 2, 0);
+      leg.rotation.z = s * .32; g.add(leg);
+    }
+    box(g, .1, .06, W - .08, dk, x, 0, 0);
+    box(g, .08, .06, W - .14, dk, x, H - .24, 0);
+  }
+  if (n > 1) box(g, L - .7, .06, .07, dk, 0, .3, 0);                                // travessa entre cavaletes
+  return g;
+}
+// trono: base e assento com almofada vermelha, encosto alto entalhado com painel vermelho, bracos e pinaculos;
+// virado para +z
+export function throne(c) {
+  const g = new THREE.Group(), wd = M('wood', '#4a2e1a'), lt = M('wood', '#6b4426'), red = M('fabric', '#9e1c1c');
+  const gold = M('metal', '#c9a24a', { rough: .35, metal: .9 }), W = .82, D = .72, sh = .5, bh = 2.0;
+  box(g, W, .12, D, wd, 0, 0, 0);                                                   // base
+  box(g, W - .08, sh - .2, D - .1, lt, 0, .12, .02);
+  box(g, W - .1, .08, D - .12, wd, 0, sh - .08, .03);
+  soft(g, W - .2, .1, D - .24, .04, red, 0, sh, .06);                               // almofada
+  box(g, W, bh - sh, .12, wd, 0, sh, -D / 2 + .06);                                 // encosto
+  const s = new THREE.Shape(); s.moveTo(-.22, 0); s.lineTo(.22, 0); s.lineTo(.22, .8); s.quadraticCurveTo(.22, 1.05, 0, 1.12); s.quadraticCurveTo(-.22, 1.05, -.22, .8); s.closePath();
+  g.add(place(new THREE.Mesh(new THREE.ExtrudeGeometry(s, { depth: .03, bevelEnabled: false }), red), 0, sh + .18, -D / 2 + .12));   // painel
+  box(g, W + .06, .1, .16, lt, 0, bh - .1, -D / 2 + .06);                           // coroa
+  for (const x of [-W / 2, W / 2]) {
+    box(g, .1, .4, D - .1, wd, x - Math.sign(x) * .05, sh, .02);                    // bracos
+    sphere(g, .05, gold, x - Math.sign(x) * .05, sh + .43, D / 2 - .08);
+    lathe(g, [[.001, 0], [.06, 0], [.06, .05], [.03, .1], [.045, .16], [.001, .24]], gold, x - Math.sign(x) * .06, bh, -D / 2 + .06, 10);
+  }
+  return g;
+}
 // aco: sprite escuro demais (sombra do desenho) vira o tom claro da paleta ou aco padrao
 const steelTone = c => hexLum(c.c0) >= .4 ? c.c0 : c.light && hexLum(c.light) > .45 ? c.light : '#9aa0a8';
 // suporte de armadura: base em cruz, haste e travessa dos ombros
@@ -1509,7 +1574,7 @@ function glowOrb(c) { const g = new THREE.Group(); sphere(g, .18, M('plain', c.c
 
 // regras por nome: a primeira que casa vence (so valem fora de arquitetura basica: piso, parede, escada...)
 const BY_NAME = [
-  [/bolts?(%s%)? of cloth/, c => clothBolt(c)], [/flower ?pot/, c => pottedPlant(c)],
+  [/bolts?(%s%)? of cloth/, c => clothBolt(c)], [/flower ?pot/, c => pottedPlant(c)], [/potted tree/, c => pottedTree(c)],
   [/fallen log|\btree trunk\b/, c => fallenLog(c)], [/stalagmite|stalactite/, c => stalagmites(c)],
   [/chest of drawers|dresser|armoire|wardrobe|cupboard/, c => FURN.cabinet(c)], [/display case/, c => vitrine(c, .96, .8)],
   [/\bcounter\b/, c => { const g = new THREE.Group(); OVR.wood = ratio(woodTone([c.it]) || c.c0, '#8a5a32'); try { g.add(hmCounter({ L: .98 })); } finally { OVR.wood = null; } return g; }],
@@ -1563,6 +1628,27 @@ function pottedPlant(c) {
     geo.computeVertexNormals();
     const m = place(new THREE.Mesh(geo, lf[i % 3]), (c.r() - .5) * r * .8, ph * .9, (c.r() - .5) * r * .8);
     m.rotation.set(-.15 - c.r() * .35, i / n * 6.28 + c.r() * .4, 0, 'YXZ'); g.add(m);
+  }
+  return g;
+}
+// arvore em vaso (topiaria): vaso de barro, troncos finos entrelacados e copa redonda podada (altura pela art)
+function pottedTree(c) {
+  const g = new THREE.Group(), pal = c.it.pal || [];
+  const clay = pal.find(hx => { const o = hslOf(hx); return o.h > .02 && o.h < .12 && o.s > .35 && o.l > .2; }) || '#a2602a';
+  const leaf = greenOf(pal) || '#3d5f34', H = clamp((c.it.hp - 14) / 46 * 1.35, .8, 2.6), ph = clamp(H * .18, .2, .32), r = .22;
+  lathe(g, [[.001, 0], [r * .7, 0], [r * .78, .02], [r, ph * .85], [r * 1.12, ph * .88], [r * 1.12, ph], [r * .95, ph], [r * .9, ph * .92], [.001, ph * .92]], M('plain', clay, { rough: .75 }), 0, 0, 0, 20);
+  const soil = place(new THREE.Mesh(new THREE.CircleGeometry(r * .9, 16), M('noisy', '#3b2a1a')), 0, ph * .9, 0); soil.rotation.x = -Math.PI / 2; g.add(soil);
+  const R = clamp(H * .26, .25, .55), cy = H - R, bark = M('wood', '#6b5a48');
+  for (let i = 0; i < 3; i++) {                                                     // troncos finos, abrindo sob a copa
+    const a = i / 3 * 6.28, top = new THREE.Vector3(Math.cos(a) * .05, cy - R * .4, Math.sin(a) * .05);
+    const base = new THREE.Vector3(Math.cos(a + 1.2) * .04, ph * .9, Math.sin(a + 1.2) * .04);
+    limb(g, .022, .014, base.distanceTo(top), bark, base, top.clone().sub(base), 6);
+  }
+  const la = M('noisy', leaf), lb = M('noisy', shade(leaf, .72)), lc = M('noisy', shade(leaf, 1.18));
+  blob(g, R * .92, lb, 0, cy, 0, c.it.id, .95);                                     // copa: miolo escuro e tufos por fora
+  for (let i = 0; i < 9; i++) {
+    const a = i / 9 * 6.28 + c.r() * .5, el = (c.r() - .35) * 1.4;
+    blob(g, R * (.42 + c.r() * .12), el > .3 ? lc : la, Math.cos(a) * Math.cos(el) * R * .62, cy + Math.sin(el) * R * .62, Math.sin(a) * Math.cos(el) * R * .62, c.it.id + i, .95);
   }
   return g;
 }
