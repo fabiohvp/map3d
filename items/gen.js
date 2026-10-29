@@ -717,6 +717,42 @@ export function throne(c) {
   }
   return g;
 }
+// ankh de pedra (2 tiles): pedestal em degraus, haste, travessa e alca oval, no plano xy (bracos ao longo de x)
+export function ankhStatue(red = false) {
+  const g = new THREE.Group(), st = M('stone', red ? '#6e6560' : '#7a716a'), dk = M('stone', '#4f4843');
+  box(g, 1.5, .14, .7, dk, 0, 0, 0); box(g, 1.2, .12, .55, st, 0, .14, 0); box(g, .9, .12, .45, dk, 0, .26, 0);
+  const T = .22, s = new THREE.Shape();                                              // silhueta do ankh
+  s.moveTo(-.13, 0); s.lineTo(.13, 0); s.lineTo(.11, 1.25); s.lineTo(.62, 1.29); s.lineTo(.62, 1.52); s.lineTo(.11, 1.5);
+  s.lineTo(.1, 1.56); s.absellipse(0, 1.98, .34, .46, -Math.PI / 2 + .3, Math.PI * 1.5 - .3, false); s.lineTo(-.1, 1.56);
+  s.lineTo(-.11, 1.5); s.lineTo(-.62, 1.52); s.lineTo(-.62, 1.29); s.lineTo(-.11, 1.25); s.closePath();
+  const hole = new THREE.Path(); hole.absellipse(0, 2.0, .18, .29, 0, Math.PI * 2, true); s.holes.push(hole);
+  const geo = new THREE.ExtrudeGeometry(s, { depth: T, bevelEnabled: true, bevelThickness: .03, bevelSize: .03, bevelSegments: 2, curveSegments: 24 });
+  geo.translate(0, .38, -T / 2);
+  g.add(place(new THREE.Mesh(geo, st), 0, 0, 0));
+  if (red) box(g, .7, .05, .75, M('fabric', '#7a1020'), 0, .38, 0);                  // pano vermelho do sacrificio
+  return g;
+}
+// cama em ruinas (2x2): estrado e colchao com lencol amarrotado, cabeceira em -x, postes da cabeceira altos e os
+// do pe quebrados, viga do dossel caida
+export function ruinedBed() {
+  const g = new THREE.Group(), wd = M('wood', '#5a3c1c'), dk = M('wood', '#3e2810'), sh = M('fabric', '#b9b6ac'), sd = M('fabric', '#8f8c82');
+  const L = 1.8, W = 1.6;
+  box(g, L, .3, W, dk, 0, .08, 0);                                                  // estrado
+  box(g, L - .1, .14, W - .1, sd, .02, .38, 0);                                     // colchao
+  const geo = new THREE.PlaneGeometry(L - .02, W, 12, 10), p = geo.attributes.position;   // lencol amarrotado
+  for (let i = 0; i < p.count; i++) p.setZ(i, .04 * Math.sin(p.getX(i) * 9) * Math.cos(p.getY(i) * 7) + .03 * Math.sin(p.getY(i) * 13 + p.getX(i) * 3));
+  geo.computeVertexNormals();
+  const m = place(new THREE.Mesh(geo, M('fabric', '#c4c1b6', { side: THREE.DoubleSide })), .03, .56, 0); m.rotation.x = -Math.PI / 2; g.add(m);
+  box(g, .1, 1.0, W, wd, -L / 2 + .05, .35, 0);                                     // cabeceira
+  box(g, .14, .5, W * .9, sh, -L / 2 + .18, .52, 0);                                // travesseiro
+  for (const z of [-W / 2, W / 2]) {
+    box(g, .1, 2.0, .1, wd, -L / 2 + .05, 0, z);                                    // postes da cabeceira
+    box(g, .1, .7 + (z > 0 ? .25 : 0), .1, wd, L / 2 - .05, 0, z);                   // postes do pe, quebrados
+  }
+  box(g, .08, .08, W + .1, wd, -L / 2 + .05, 1.96, 0);                              // viga do dossel na cabeceira
+  const fall = place(new THREE.Mesh(new THREE.BoxGeometry(L * .9, .07, .07), dk), .1, 1.2, -W / 2); fall.rotation.z = -.55; g.add(fall);
+  return g;
+}
 // aco: sprite escuro demais (sombra do desenho) vira o tom claro da paleta ou aco padrao
 const steelTone = c => hexLum(c.c0) >= .4 ? c.c0 : c.light && hexLum(c.light) > .45 ? c.light : '#9aa0a8';
 // suporte de armadura: base em cruz, haste e travessa dos ombros

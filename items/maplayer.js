@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { ITEMS } from './models.js';
-import { buildOne, buildSet, mapTree, fieldCannon, settle, tableRun, throne } from './gen.js';
+import { buildOne, buildSet, mapTree, fieldCannon, settle, tableRun, throne, ankhStatue, ruinedBed } from './gen.js';
 import { TEX } from './textures.js';
 
 TEX.size = 256;
@@ -19,13 +19,24 @@ const ROTATED = [[[0xE8E, 0xE8F, 0xE90], [0xE8D, 0xE8C, 0xE8B]], [[0xE94, 0xE95,
 const CANNON_DIR = { 0xE8E: -1, 0xE94: 1 };
 const SETTLE = { 0xB94: 'y', 0xB92: 'x' };       // banco de encosto alto (2 pecas): ao longo de y / de x
 const SETTLE_IDS = new Set([0xB91, 0xB92, 0xB93, 0xB94]);
+// pecas de varios tiles sem conjunto no items.json (a malha do conversor as funde): graphics, deslocamentos, modelo
+// e giro (ankh: bracos ao longo de x; cama: cabeceira em -x)
+const B2 = [[0, 0], [1, 0], [0, 1], [1, 1]];
+const CUSTOM = [
+  { ids: [0x3, 0x2], d: [[0, 0], [0, 1]], make: () => ankhStatue(), rot: Math.PI / 2 },
+  { ids: [0x4, 0x5], d: [[0, 0], [1, 0]], make: () => ankhStatue(), rot: 0 },
+  { ids: [0x1D98, 0x1D97], d: [[0, 0], [0, 1]], make: () => ankhStatue(true), rot: Math.PI / 2 },
+  { ids: [0x1895, 0x1897, 0x1894, 0x1896], d: B2, make: ruinedBed, rot: 0 },
+  { ids: [0x1899, 0x189B, 0x1898, 0x189A], d: B2, make: ruinedBed, rot: 0 },
+];
+const CUSTOM_IDS = new Set(CUSTOM.flatMap(c => c.ids));
 const TABLE = /^table$/;                         // pecas de mesa vizinhas viram uma mesa de cavaletes (tableRun)
 const THRONE = { 0xB32: 0, 0xB33: Math.PI / 2 }; // trono: giro do modelo (virado para +y / +x)      // boca do canhao de muralha: oeste (-x) / leste (+x)
 const TRUNK = /^(?!potted).*\b(tree|trunk)\b/, LEAVES = /\b(leaves|needles|foliage)\b/;   // pecas da arvore no mesmo tile
 const FLOOR = /\b(hay|straw)\b/;                 // decalque de chao com a art deitada (floorDecal)
 // moveis de varias pecas (o gerador faz um por tile), arte de parede (quadro, banner, tapecaria),
-// trepadeira e ossos (classificados como arbusto e lingote), vaso e ervas penduradas
-const MESH_NAME = /display case|counter|showcase|banner|tapestr|painting|portrait|\b(table|bench|desk|vines?|ivy|bones?|bone pile|gravestone|tombstone|headstone|potted cactus|herbs)\b/;
+// trepadeira e ossos (classificados como arbusto e lingote), vaso e ervas penduradas, mastro/verga/vela de navio
+const MESH_NAME = /display case|counter|showcase|banner|tapestr|painting|portrait|\b(table|bench|desk|vines?|ivy|bones?|bone pile|gravestone|tombstone|headstone|potted cactus|herbs|spar|masts?|sails?|rigging)\b/;
 const LYING = /^(weapon|armor|clothing|jewelry|consumable)$/;   // deitados ou expostos num movel: vao para a malha
 const SB = 5;                                   // sprBox por sprite: x0, x1, y0, y1, topo (z)
 const PS = 4;                                    // place por instancia: x, altura (z), y, giro
@@ -52,6 +63,11 @@ export async function createItemLayer(gl, canvas) {
   }
   // arvore de um tile so (tronco + folhas): fica para a montagem pela malha (mapTree), nao para o conjunto
   for (const s of SETS) s.skip = s.st.cat === 'vegetation' && s.st.pieces.every(p => !p.dx && !p.dy);
+  for (const c of CUSTOM) {
+    const xs = c.d.map(v => v[0]), ys = c.d.map(v => v[1]);
+    SETS.push({ st: { name: 'custom', pieces: c.ids.map((id, k) => ({ id: hexOf(id), dx: c.d[k][0], dy: c.d[k][1], dz: 0 })) }, ids: c.ids,
+      cx: (Math.min(...xs) + Math.max(...xs)) / 2, cy: (Math.min(...ys) + Math.max(...ys)) / 2, rot: c.rot, make: c.make });
+  }
   const byAnchor = new Map();
   SETS.forEach((s, i) => { const k = s.ids[0]; if (!byAnchor.has(k)) byAnchor.set(k, []); byAnchor.get(k).push(i); });
   for (const l of byAnchor.values()) l.sort((a, b) => SETS[b].ids.length - SETS[a].ids.length);
@@ -152,9 +168,9 @@ export async function createItemLayer(gl, canvas) {
         const [t, l, top] = key.slice(1).split(',').map(Number);
         obj = mapTree([t, l].filter(Boolean).map(g => byHex[hexOf(g)]), Math.max(1, top * ZU * .95));
       } else if (key[0] === 's') {
-        const { st, ids } = SETS[+key.slice(1)];
+        const { st, ids, make } = SETS[+key.slice(1)];
         const cur = curated.get(ids.map(hexOf).sort().join('|'));
-        obj = cur ? cur.build() : CANNON_DIR[ids[0]] ? fieldCannon(CANNON_DIR[ids[0]]) : SETTLE[ids[0]] ? settle(SETTLE[ids[0]]) : buildSet(st, id => byHex[id], () => null);
+        obj = make ? make() : cur ? cur.build() : CANNON_DIR[ids[0]] ? fieldCannon(CANNON_DIR[ids[0]]) : SETTLE[ids[0]] ? settle(SETTLE[ids[0]]) : buildSet(st, id => byHex[id], () => null);
       } else {
         const it = byHex[hexOf(+key.slice(1))], cur = curated.get(it.hex);
         obj = cur ? cur.build() : THRONE[it.id] !== undefined ? throne() : buildOne(it, null);
@@ -194,7 +210,7 @@ export async function createItemLayer(gl, canvas) {
     let k = kept.get(g);
     if (k === undefined) {
       const it = byHex[hexOf(g)];
-      k = !it ? 2 : it.cat === 'architecture' || it.cat === 'terrain' || it.cat === 'unknown' || it.sub === 'painting' || (!SETTLE_IDS.has(g) && THRONE[g] === undefined && !TABLE.test(it.name || '') && (it.cat === 'effect' || MESH_NAME.test(it.name || ''))) ? 2
+      k = !it ? 2 : CUSTOM_IDS.has(g) ? 0 : it.cat === 'architecture' || it.cat === 'terrain' || it.cat === 'unknown' || it.cat === 'ship' || it.sub === 'painting' || (!SETTLE_IDS.has(g) && !CUSTOM_IDS.has(g) && THRONE[g] === undefined && !TABLE.test(it.name || '') && (it.cat === 'effect' || MESH_NAME.test(it.name || ''))) ? 2
         : LYING.test(it.cat) ? 1 : 0;
       kept.set(g, k);
     }
