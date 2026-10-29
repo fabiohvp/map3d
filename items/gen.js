@@ -88,11 +88,25 @@ const ARCH = {
   // parede: rodape saliente, corpo, cinta de pedra no meio e capeamento em dois degraus; madeira ganha montantes e travessa
   wall(c) {
     const g = new THREE.Group();
-    const t = has(c.n, /brick/) ? 'brick' : has(c.n, /plaster|board|wood|log|plank/) ? 'wood' : 'stone';
+    const t = has(c.n, /brick/) ? 'brick' : has(c.n, /plaster/) ? 'plaster' : has(c.n, /board|wood|log|plank/) ? 'wood' : 'stone';
     const m = M(t, c.c0), dk = M('stone', shade(c.c0, .72)), cap = M('stone', shade(c.c0, .85));
     const h = Math.max(.9, Math.min(2.6, c.H * 1.1));
     const run = (L, D, x, z, alongX) => {
       const B = (w, hh, d, mat, y) => alongX ? box(g, w, hh, d, mat, x, y, z) : box(g, d, hh, w, mat, x, y, z);
+      if (t === 'plaster') {
+        // reboco claro em enxaimel: esteios nas pontas, frechal, travessa e mao-francesa escuros (como a art)
+        const pl = M('noisy', c.light), tb = M('wood', shade(c.dark, 1.4)), P = (k, w, hh, y) => alongX
+          ? box(g, w, hh, D + .03, tb, x + k, y, z) : box(g, D + .03, hh, w, tb, x, y, z + k);
+        B(L, h, D, pl, 0);
+        for (const k of [-.5, .5]) P(k * (L - .07), .07, h, 0);
+        for (const y of [0, h * .5 - .03, h - .07]) B(L, .07, D + .03, tb, y);
+        const len = Math.hypot(L * .5, h * .5), br = place(new THREE.Mesh(new THREE.BoxGeometry(.06, len, D + .02), tb), 0, h * .25, 0);
+        br.rotation[alongX ? 'z' : 'x'] = (alongX ? -1 : 1) * Math.atan2(L * .5, h * .5);
+        br.position[alongX ? 'x' : 'z'] = (alongX ? x : z) + L * .25;
+        br.position[alongX ? 'z' : 'x'] = alongX ? z : x;
+        g.add(br);
+        return;
+      }
       B(L + .02, .14, D + .06, dk, 0);
       B(L, h - .2, D, m, .14);
       if (t === 'wood') {
@@ -614,6 +628,30 @@ const WEAP = {
     return g;
   },
 };
+// canhao de muralha (conjunto de 3 tiles): carreta com flecha no chao, duas rodas grandes e cano longo com a boca
+// para +x (dir -1: para -x); comprimento ~2,6 como a art
+export function fieldCannon(dir = 1) {
+  const g = new THREE.Group(), wd = M('wood', '#7a4a24'), dk = M('wood', '#4e2e16'), st = M('metal', '#4a4e54', { rough: .38 });
+  const cr = new THREE.Group(); cr.scale.x = dir; g.add(cr);
+  for (const s of [-1, 1]) {                                                        // flancos da carreta e flecha
+    const sh = new THREE.Shape(); sh.moveTo(-1.25, 0); sh.lineTo(-1.1, 0); sh.lineTo(.55, .42); sh.lineTo(.55, .7); sh.lineTo(.2, .74); sh.lineTo(-1.25, .1); sh.closePath();
+    const m = place(new THREE.Mesh(new THREE.ExtrudeGeometry(sh, { depth: .07, bevelEnabled: false }), wd), 0, 0, s * .2 - .035); cr.add(m);
+  }
+  box(cr, .12, .06, .48, dk, -1.1, 0, 0); box(cr, .16, .08, .46, dk, .4, .5, 0);   // travessas
+  for (const s of [-1, 1]) {                                                        // rodas raiadas
+    const wh = new THREE.Group(); wh.position.set(.25, .5, s * .34); cr.add(wh);
+    wh.add(new THREE.Mesh(new THREE.TorusGeometry(.46, .045, 8, 28), dk));
+    for (let i = 0; i < 6; i++) { const sp = new THREE.Mesh(new THREE.BoxGeometry(.035, .9, .035), wd); sp.rotation.z = i * Math.PI / 6; wh.add(sp); }
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(.08, .08, .14, 12), st); hub.rotation.x = Math.PI / 2; wh.add(hub);
+  }
+  box(cr, .08, .08, .76, st, .25, .46, 0);                                          // eixo
+  const cn = new THREE.Group(); cn.position.set(.25, .78, 0); cn.rotation.z = -Math.PI / 2 + .08; cr.add(cn);   // cano: boca em +x
+  lathe(cn, [[.001, -.6], [.15, -.6], [.2, -.5], [.21, -.35], [.17, -.3], [.18, -.2], [.12, 1.1], [.14, 1.18], [.14, 1.3], [.09, 1.3], [.09, 1.1], [.001, 1.1]], st, 0, 0, 0, 20);
+  sphere(cn, .1, st, 0, -.66, 0);
+  for (const y of [-.3, .35, 1.05]) ring(cn, .19 - y * .04, .02, st, 0, y, 0);
+  g.traverse(o => { if (o.isMesh) o.castShadow = o.receiveShadow = true; });
+  return g;
+}
 // aco: sprite escuro demais (sombra do desenho) vira o tom claro da paleta ou aco padrao
 const steelTone = c => hexLum(c.c0) >= .4 ? c.c0 : c.light && hexLum(c.light) > .45 ? c.light : '#9aa0a8';
 // suporte de armadura: base em cruz, haste e travessa dos ombros
@@ -1471,6 +1509,7 @@ function glowOrb(c) { const g = new THREE.Group(); sphere(g, .18, M('plain', c.c
 
 // regras por nome: a primeira que casa vence (so valem fora de arquitetura basica: piso, parede, escada...)
 const BY_NAME = [
+  [/bolts?(%s%)? of cloth/, c => clothBolt(c)],
   [/fallen log|\btree trunk\b/, c => fallenLog(c)], [/stalagmite|stalactite/, c => stalagmites(c)],
   [/chest of drawers|dresser|armoire|wardrobe|cupboard/, c => FURN.cabinet(c)], [/display case/, c => vitrine(c, .96, .8)],
   [/\bcounter\b/, c => { const g = new THREE.Group(); OVR.wood = ratio(woodTone([c.it]) || c.c0, '#8a5a32'); try { g.add(hmCounter({ L: .98 })); } finally { OVR.wood = null; } return g; }],
@@ -1498,7 +1537,7 @@ const BY_NAME = [
 ];
 // nomes de pecas que a classificacao marcou como efeito/decalque/desconhecido
 const LOOSE = [
-  [/\bwall\b|\bbeam\b|\bbricks?\b|\bpost\b/, c => ARCH.wall(c)], [/\btable\b|\bdisplay\b|\bcase\b/, c => FURN.table(c)], [/\bbed\b|pillow|blanket|sheets?|\bsleeping/, c => FURN.bed(c)],
+  [/\bpost\b/, c => post(c)], [/\bwall\b|\bbeam\b|\bbricks?\b/, c => ARCH.wall(c)], [/\btable\b|\bdisplay\b|\bcase\b/, c => FURN.table(c)], [/\bbed\b|pillow|blanket|sheets?|\bsleeping/, c => FURN.bed(c)],
   [/chair|\bbench\b|stool/, c => FURN.chair(c)], [/basket/, c => CONT.basket ? CONT.basket(c) : basket(c)], [/\bpot\b|cauldron/, c => tool({ ...c, n: 'pot ' + c.n })],
   [/statue|gargoyle|\bhead\b|knight|melisande|trophy/, c => DECO.statue(c)], [/gate|bars?\b|fence|rail/, c => ARCH.fence(c)],
   [/torch|sconce|\blamp/, c => LIGHT.torch(c)], [/rack|weapons|sword|shelf/, c => FURN.shelf(c)], [/crystal/, c => ROCK.crystal(c)],
@@ -1508,6 +1547,16 @@ const LOOSE = [
 ];
 function byLoose(c) { for (const [rx, fn] of LOOSE) if (rx.test(c.n)) return fn(c); return null; }
 function spikes(c) { const g = new THREE.Group(), m = M('metal', '#8d939a'); box(g, .9, .04, .9, M('stone', c.c0), 0, 0, 0); for (let i = 0; i < 9; i++) g.add(place(new THREE.Mesh(new THREE.ConeGeometry(.04, .25, 5), m), -.3 + (i % 3) * .3, .16, -.3 + Math.floor(i / 3) * .3)); return g; }
+// rolo de pano em pe, levemente inclinado, na cor mais saturada da paleta
+function clothBolt(c) {
+  const g = new THREE.Group(), col = [...c.it.pal].sort((a, b) => hslOf(b).s - hslOf(a).s)[0] || c.c0;
+  const r = place(new THREE.Mesh(new THREE.CylinderGeometry(.1, .1, 1.15, 16), M('fabric', col)), 0, .58, 0);
+  r.rotation.z = .12; g.add(r);
+  for (const y of [.03, 1.13]) { const e = place(new THREE.Mesh(new THREE.CylinderGeometry(.045, .045, .04, 10), M('wood', '#c9a46a')), -Math.sin(.12) * (y - .58), y, 0); e.rotation.z = .12; g.add(e); }
+  return g;
+}
+// esteio/poste solto: vara fina (o viewer do mapa ajusta posicao e altura pela malha)
+function post(c) { const g = new THREE.Group(), t = has(c.n, /metal|iron/) ? 'metal' : has(c.n, /stone|marble/) ? 'stone' : 'wood'; box(g, .14, Math.max(.6, c.H), .14, M(t, has(c.n, /wood/) ? shade(c.dark, 1.4) : c.c0), 0, 0, 0); return g; }
 function signpost(c) { const g = new THREE.Group(), wd = M('wood', c.c0); box(g, .08, 1.3, .08, wd, 0, 0, 0); box(g, .6, .3, .05, wd, .15, .85, 0); return g; }
 const BASIC = new Set(['floor', 'wall', 'stairs', 'column', 'window', 'fence']);
 function byName(it, c) {
@@ -1554,7 +1603,8 @@ function buildOneInner(it, spriteTex) {
     }
     if (lab && BY_LABEL[lab]) return BY_LABEL[lab](c);
     const fn = (TABLE[cat] && TABLE[cat][sub]) || CAT_FALLBACK[cat];
-    if (cat !== 'vegetation' && has(c.n, /\bplants?\b|\bgrass\b|\bvines?\b|\bferns?\b|\bweeds?\b/)) g = VEG.bush(c);
+    if (cat !== 'vegetation' && has(c.n, /\bgrass(es)?\b/)) g = grassTuft(c);
+    else if (cat !== 'vegetation' && has(c.n, /\bplants?\b|\bvines?\b|\bferns?\b|\bweeds?\b/)) g = VEG.bush(c);
     else if (has(c.n, /\b(cannon|iron|stone) ?balls?\b|\bshot\b/)) {
       g = new THREE.Group();
       for (let i = 0; i < 4; i++) sphere(g, .1, M('metal', '#3a3d42', { rough: .5 }), (i % 2 - .5) * .2 + (i > 1 ? .1 : 0), .1 + (i > 1 ? .15 : 0), (i > 1 ? 0 : .05));
@@ -1657,14 +1707,23 @@ function woodTone(items) {
 }
 // arvore de varias pecas: altura pelo sprite mais alto, copa pela pegada, folhagem pela paleta das pecas de folha
 function bigTree(st, items, nx, ny) {
+  const hp = Math.max(...items.map(it => it.hp));
+  return treeOf(items, clamp((hp - 14) / 46 * .62, 1.6, 6), clamp(Math.max(nx, ny) * .5, .7, 2.4), n0(st));
+}
+function treeOf(items, h, spread, extra = '') {
   const names = items.map(it => (it.name || '').toLowerCase()).join(' ');
   const leafIt = items.filter(it => /leaves|needles/.test((it.name || '').toLowerCase()));
   const leaf = (leafIt.length ? leafIt : items).map(it => greenOf(it.pal)).find(Boolean) || '#3f7a3a';
   const bark = woodTone(items.filter(it => /tree|trunk/.test((it.name || '').toLowerCase()))) || '#5e4630';
-  const hp = Math.max(...items.map(it => it.hp));
-  const out = treeModel({ h: clamp((hp - 14) / 46 * .62, 1.6, 6), spread: clamp(Math.max(nx, ny) * .5, .7, 2.4), leaf, bark, kind: treeKind(names + ' ' + n0(st)), seed: items[0].id });
+  const out = treeModel({ h, spread, leaf, bark, kind: treeKind(names + ' ' + extra), seed: items[0].id });
   out.userData.templ = 'tree';
   return out;
+}
+// arvore do mapa (tronco e folhas no mesmo tile): altura (unidades de modelo) da malha do conversor e copa pela largura
+// da art das folhas (44 px por tile)
+export function mapTree(items, h) {
+  const w = Math.max(...items.map(it => it.w || 44));
+  return treeOf(items, h, clamp(w / 44 * .42, .6, 2.2));
 }
 // vitrine de loja: armario de base com portas, caixa de vidro com montantes e tampo (comprimento em x)
 function vitrine(c, L, D) {

@@ -1740,7 +1740,7 @@ def build_statics(src, n, W, H, out_map):
             params = [o & 0xFFFF, o >> 16, nverts[i], 0, 0, 0]
         else:
             params = [int(round(v * 64)) & 0xFFFF for v in params]
-        table[i] = [ax, ay, tw, th, tx_, ty, w, h, kind | (p << 8), 0] + params
+        table[i] = [ax, ay, tw, th, tx_, ty, w, h, kind | (p << 8), s & 0xFFFF] + params   # 9: graphic (Itens 3D do viewer)
     with open(os.path.join(out_map, 'atlas.bin'), 'wb') as f:
         f.write(struct.pack('<4sHHI', b'ATL1', ATLAS, pages, 0))
         f.write(atlas.astype('<u2').tobytes())
