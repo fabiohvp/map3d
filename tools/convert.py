@@ -328,6 +328,7 @@ HULL_CELLS = 32          # células da grade do casco (o assets3d usa 420; aqui 
 CARD_CELLS = 16          # casco fino: o recorte da art (alpha) já dá a silhueta
 FLAT_CELLS = 12
 FLAT_THICK = 0.4         # espessura do slab deitado, em z
+DECAL_THICK = 1.0        # slab de entulho/tapete sobre o piso: acima da laje do piso no mesmo z
 MESH_CLASSES = (6, 36, 96, 192, 384, 768, 1536, 3072)   # vértices por instância de cada lote; 0 = telhado
 MESH_MAX = MESH_CLASSES[-1]
 
@@ -414,14 +415,16 @@ def _expand(P, px, tris, nrm=None):
     return P[tris.ravel()], px[tris.ravel()], n
 
 
-def fit_box(mask):
+def fit_box(mask, d=None):
     """Caixa [x0, x1] × [y0, y1] × [0, H] cuja projeção é a silhueta: largura = 22(a + b), o vértice de
-    baixo fica 11(a − b) à direita do centro e a altura é o que sobra acima da pegada."""
+    baixo fica 11(a − b) à direita do centro e a altura é o que sobra acima da pegada.
+    d = a − b; sem d, sai das colunas da última linha da silhueta."""
     h, w = mask.shape
     bx0, by0, bx1, by1 = _bbox(mask)
     s = (bx1 - bx0) / HT
     cols = np.nonzero(mask[max(by1 - 3, by0):by1, bx0:bx1].any(0))[0]
-    d = (cols.mean() + 0.5 - (bx1 - bx0) / 2) / (HT / 2) if len(cols) else 0.0
+    if d is None:
+        d = (cols.mean() + 0.5 - (bx1 - bx0) / 2) / (HT / 2) if len(cols) else 0.0
     lim = max(s - 2 * MIN_DIM, 0.0)
     d = float(np.clip(d, -lim, lim))
     a, b = max((s + d) / 2, MIN_DIM), max((s - d) / 2, MIN_DIM)
@@ -598,9 +601,10 @@ def _compact(P, px, tris, min_area=1e-10):
     return P[used], px[used], remap[tris]
 
 
-def flat_mesh(mask, t=FLAT_THICK, target=FLAT_CELLS, plinth=False):
+def flat_mesh(mask, t=FLAT_THICK, target=FLAT_CELLS, plinth=False, skin=False):
     """Silhueta desprojetada no chão: pele de cima (na altura t), base e paredes laterais na borda.
-    plinth: a pegada é a do chão (z = 0) também em cima: arte pintada no losango do tile, erguida."""
+    plinth: a pegada é a do chão (z = 0) também em cima: arte pintada no losango do tile, erguida.
+    skin: só a pele de cima (decalque no chão, sempre visto de cima: base e laterais não aparecem)."""
     h, w = mask.shape
     x0, y0, x1, y1 = _bbox(mask)
     m = mask[y0:y1, x0:x1]
@@ -625,7 +629,10 @@ def flat_mesh(mask, t=FLAT_THICK, target=FLAT_CELLS, plinth=False):
             if not cin[i, j]:
                 continue
             a, b, d, e = vid[i, j], vid[i, j + 1], vid[i + 1, j + 1], vid[i + 1, j]
-            tris += [(a, e, d), (a, d, b), (n + a, n + b, n + d), (n + a, n + d, n + e)]
+            tris += [(a, e, d), (a, d, b)]
+            if skin:
+                continue
+            tris += [(n + a, n + b, n + d), (n + a, n + d, n + e)]
             for p, q, (ni, nj) in ((a, b, (i - 1, j)), (b, d, (i, j + 1)), (d, e, (i + 1, j)), (e, a, (i, j - 1))):
                 if not (0 <= ni < R and 0 <= nj < C and cin[ni, nj]):
                     tris += [(p, q, n + q), (p, n + q, n + p)]
@@ -1133,7 +1140,7 @@ PLANT_NAMES = (r'bramble|sapling|rushes|\bweeds?\b|cattail|fan plant|elephant ea
                r'\bflowers?\b|mushroom|\bcrops?\b|wheat|\bcorn\b|cotton|\bflax|hay sheave|lettuce|cabbage|'
                r'turnip|onion|carrot|pumpkin plant|\bvines?\b|\bivy\b|orfluer|cactus|\bhedge')
 FLAT_NAMES = (r'lill?y pads?|water lill?y|\bacid\b|garbage|refuse|debris|spilled|wood curls|\bpuddle|'
-              r'^\s*blood\s*$|blood smear|blood pool')
+              r'^\s*blood\s*$|blood smear|blood pool|damaged books|^\s*bones\s*$')
 LOG_NAMES = r'fallen log|sunken log|\btree trunk|\blog\b'
 
 
@@ -1348,10 +1355,15 @@ def sprite_mesh(img, tx, cat, sub, name='', height=0, surface=False):
     mask = img != 0
     arch = archetype(tx, cat, sub)
     rho = tx['default_depth_ratio'].get(f'{cat}/{sub}', tx['category_default_depth_ratio'].get(cat, 0.5))
-    if (arch == 'flat' or (surface and height == 0 and (cat != 'architecture' or sub == 'floor'))
-            or (sub == 'water' and re.fullmatch(r'\s*water\s*', name, re.I)) or re.search(FLAT_NAMES, name, re.I)):
-        # tapetes, pentagramas, pisos, água, vitórias-régias, entulho: deitam no chão (ou na água)
-        return 'flat', flat_mesh(mask)
+    floor = ((surface and height == 0 and (cat != 'architecture' or sub == 'floor'))
+             or (sub == 'water' and re.fullmatch(r'\s*water\s*', name, re.I)))
+    if arch == 'flat' or floor or re.search(FLAT_NAMES, name, re.I):
+        # tapetes, pentagramas, pisos, água, vitórias-régias, entulho: deitam no chão (ou na água). O que
+        # fica sobre o piso (entulho, livros, ossos, tapete) é só a pele de cima, na pegada do losango do
+        # tile e acima da laje do piso (senão briga de profundidade): é sempre visto de cima
+        if floor:
+            return 'flat', flat_mesh(mask)
+        return 'flat', flat_mesh(mask, DECAL_THICK, plinth=True, skin=True)
     if (re.search(PLANT_NAMES, name, re.I) or cat == 'vegetation' and sub in ('flower', 'mushroom', 'crop')
             or cat == 'terrain' and sub == 'ground' and height <= 2):
         return 'planta', plant_mesh(mask, height)
@@ -1363,6 +1375,8 @@ def sprite_mesh(img, tx, cat, sub, name='', height=0, surface=False):
             return 'tora', mesh
     if f'{cat}/{sub}' == 'architecture/arch':
         arch = 'box'                         # arco = parede com vão: caixa fina e o alpha recorta o vão
+    if re.search(r'stone face', name, re.I):
+        return 'painel', wall_face_mesh(mask)
     if re.search(PANEL_NAMES, name, re.I) or sub == 'painting':
         mesh = rail_mesh(mask, snap=True)   # quadro/estandarte: plano na parede (borda do tile)
         if mesh is not None:
@@ -1407,6 +1421,15 @@ def sprite_mesh(img, tx, cat, sub, name='', height=0, surface=False):
         need = {'architecture/stairs': 0.6, 'furniture/bed': 0.6}.get(kind, 0.5 if kind in WALL_LIKE else 0.8)
         if iou >= need:
             return 'box' if len(boxes) == 1 else 'canto', box_mesh(mask, boxes)
+        if kind == 'furniture/cabinet' or re.search(r'\bcovered\b', name, re.I):
+            # cômoda com espelho/relógio, cadeira coberta por lençol: o casco inflado gira com a câmera; vale a
+            # caixa de melhor IoU entre as inclinações da pegada se ela cobre quase toda a silhueta
+            x0, y0, x1, y1 = _bbox(mask)
+            sw = (x1 - x0) / HT
+            iou, d = max((hexagon_iou(mask, [fit_box(mask, d)]), d) for d in np.linspace(-sw, sw, 41))
+            box = fit_box(mask, d)
+            if iou >= 0.6 and hexagon_iou(mask, [box], of_mask=True) >= 0.85:
+                return 'box', box_mesh(mask, [box])
         if kind in ('architecture/floor', 'architecture/bridge'):   # superfície pisável: casco vira almofada
             return 'flat', flat_mesh(mask)
         arch = 'hull'
@@ -1603,6 +1626,20 @@ def wall_plane_mesh(img, d):
     return _plane_mesh(mask, place)
 
 
+def wall_face_mesh(mask, gap=0.12):
+    """Peça presa na parede do próprio tile (rosto de pedra das armadilhas): plano vertical rente à borda
+    oeste (arte à esquerda do centro) ou norte (à direita), cada pixel no seu raio do UO (exato)."""
+    h, w = mask.shape
+    x0, y0, x1, y1 = _bbox(mask)
+    west = (x0 + x1) / 2 < w / 2
+
+    def place(sx, sy):
+        du = (sx - w / 2) / HT                      # lx − ly
+        lx, ly = (np.full_like(du, gap), gap - du) if west else (gap + du, np.full_like(du, gap))
+        return np.stack([lx, ly, (HT * (lx + ly) + h - 44 - sy) / PZ], 1)
+    return _plane_mesh(mask, place)
+
+
 def hung_sprite(img, cat):
     """Arte alta e estreita de armadura/roupa: o sprite de peça pendurada num suporte."""
     if img is None or cat not in ('armor', 'clothing') or img.shape[0] < 66:
@@ -1625,9 +1662,13 @@ def build_statics(src, n, W, H, out_map):
     gx, gy, z, sid, hue = gx[first], gy[first], z[first], sid[first], hue[first]
     print(f'  {total_raw} itens, {len(sid)} após NoDraw e duplicatas')
 
-    # tie = ordem do item dentro da célula (ordem do arquivo), usado para desempatar profundidade
+    # tie = ordem de desenho do item dentro da célula, usado para desempatar profundidade. Como no cliente:
+    # z, −1 se Background (piso), +1 se tem altura; empate fica na ordem do arquivo (entulho listado antes do
+    # piso no mesmo z é desenhado por cima dele)
     cell = gy * W + gx
-    order = np.argsort(cell, kind='stable')
+    sf = sflags[sid]
+    pri = z.astype(np.int64) - ((sf & np.uint64(SF_BACKGROUND)) != 0) + (sheight[sid] > 0)
+    order = np.lexsort((np.arange(len(cell)), pri, cell))
     cs = cell[order]
     start = np.r_[0, np.nonzero(np.diff(cs))[0] + 1]
     rank = np.arange(len(cs)) - np.repeat(start, np.diff(np.r_[start, len(cs)]))
