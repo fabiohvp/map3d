@@ -46,6 +46,12 @@
   #msg code { font-family: var(--mono); background: rgba(0,0,0,.35); padding: 1px 5px; border-radius: 3px; }
   @media (max-width: 640px) { #mini .wrap { width: 180px; } #hud { width: 210px; } }
 </style>
+<!-- three.js só é carregado se a opção "Itens 3D" for escolhida (items/maplayer.js) -->
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }
+</script>
 </head>
 <body>
 <canvas id="gl"></canvas>
@@ -60,6 +66,9 @@
     <label class="chk" for="opt-roofs"><input id="opt-roofs" type="checkbox"> Telhados</label>
     <label class="chk" for="opt-smooth"><input id="opt-smooth" type="checkbox"> Relevo suave</label>
   </div>
+  <div class="mapsel"><span>Statics</span><select id="smode" aria-label="Origem dos statics">
+    <option value="data">data · sprites do conversor</option><option value="items">Itens 3D · objetos de items/, arquitetura da malha</option></select></div>
+  <label for="irad" id="iradl" hidden>Distância dos itens 3D <span id="iradv"></span><input id="irad" type="range" min="1" max="6" step="1"></label>
   <label class="chk" for="opt-classic"><input id="opt-classic" type="checkbox"> Vista 2D (ângulo e escala do cliente)</label>
   <label for="zs">Escala de altura <span id="zsv"></span><input id="zs" type="range" min="0.03" max="0.5" step="0.005"></label>
   <label for="rad">Distância de visão <span id="radv"></span><input id="rad" type="range" min="2" max="14" step="1"></label>
@@ -350,7 +359,8 @@ out vec3 vWorld;
 out vec3 vN;
 flat out uvec4 vRect;   // ax, ay, tw, th no atlas
 flat out uvec4 vTrim;   // tx, ty, página, hue
-flat out uint vFlags;   // bit0 partialHue
+flat out uint vFlags;   // bit0 partialHue · bit1 telhado
+out vec2 vG;            // telhado: posição no tile (0..1; fora = beiral)
 const ivec2 Q[6] = ivec2[6](ivec2(0,0), ivec2(1,0), ivec2(0,1), ivec2(1,0), ivec2(1,1), ivec2(0,1));
 const vec4 OUT = vec4(2.0, 2.0, 2.0, 1.0);
 float P(uint v) { return float(int(v << 16u) >> 16) / 64.0; }
@@ -366,12 +376,15 @@ void main() {
   vec3 tile = vec3(float(aA & 63u), float((aA >> 6) & 63u), float(int((aA >> 12) & 255u) - 128));
   float tie = float((aA >> 20) & 15u);
   vFlags = (aA >> 24) & 1u;
+  vG = vec2(-1.0);
   vec3 L;
   if (uKind == 0) {            // telhado: plano inclinado com beiral
     vec2 a = vec2(Q[gl_VertexID % 6]);
     float e = P(t2.z), c = P(t2.w), sx = P(t3.x), sy = P(t3.y);
     vec2 g = mix(vec2(-e), vec2(1.0 + e), a);
     vec3 T = vec3(g, c + sx * (1.0 - g.x) + sy * (1.0 - g.y));   // plano ajustado à art
+    vFlags |= 2u;
+    vG = g;
     vPix = proj(T, w, h);      // a textura vem dele
     L = T;
     float ctr = c + 0.5 * (sx + sy), hs = 0.5 * (abs(sx) + abs(sy));
@@ -438,12 +451,22 @@ in vec3 vN;
 flat in uvec4 vRect;
 flat in uvec4 vTrim;
 flat in uint vFlags;
+in vec2 vG;
 out vec4 outColor;
 void main() {
   // pixels transparentes da art são descartados: a silhueta (e janelas, arcos, folhagem) vem da art
   vec2 p = vPix - vec2(vTrim.xy);
   if (p.x < 0.0 || p.y < 0.0 || p.x >= float(vRect.z) || p.y >= float(vRect.w)) discard;
   vec4 c = texture(uAtlas, vec3((vec2(vRect.xy) + p) / uAtlasSize, float(vTrim.z)));
+  if (c.a < 0.5 && (vFlags & 2u) != 0u && all(greaterThan(vG, vec2(0.02))) && all(lessThan(vG, vec2(0.98)))) {
+    // telhado: frestas transparentes entre as telhas da art viram buracos no plano inclinado (no cliente a
+    // fileira vizinha as cobre); dentro do tile pega o pixel opaco mais perto, o beiral mantém a silhueta
+    for (int r = 2; r <= 8 && c.a < 0.5; r += 2)
+      for (int d = 0; d < 8 && c.a < 0.5; d++) {
+        vec2 q = clamp(p + float(r) * vec2(cos(float(d) * 0.785398), sin(float(d) * 0.785398)), vec2(0.0), vec2(vRect.zw) - 1.0);
+        c = texture(uAtlas, vec3((vec2(vRect.xy) + q) / uAtlasSize, float(vTrim.z)));
+      }
+  }
   if (c.a < 0.5) discard;
   vec3 col = c.rgb;
   if (vTrim.w != 0u) {
@@ -473,7 +496,10 @@ for (const i of [0, 1]) { gl.enableVertexAttribArray(i); gl.vertexAttribDivisor(
 gl.bindVertexArray(null);
 // vértices por instância de cada lote (manifest.meshClasses): 0 = telhado (6), k = malhas de até N vértices
 let kindVerts = [6];
-const statics = { ready: false, sprTex: null, meshTex: null, atlas: null, atlasSize: 4096, hueTex: null, exists: null };
+const statics = { ready: false, sprTex: null, meshTex: null, atlas: null, atlasSize: 4096, hueTex: null, exists: null, sprG: null };
+// Itens 3D: statics a até settings.itemRadius chunks viram os modelos de items/ (three.js no mesmo contexto);
+// além disso, e os telhados, seguem com as malhas do conversor
+const items3d = { layer: null, loading: false, sig: '', near: new Set(), err: '' };
 
 // itens avulsos (ex.: item dinâmico do servidor) por ?items=sprite:lote:x:y:z[:hue],...
 // sprite/lote vêm de tools/sprite_lookup.py (graphic -> índice em sprites.bin)
@@ -486,13 +512,112 @@ const extraItems = (new URLSearchParams(location.search).get('items') || '').spl
 });
 
 // SPR1: u32 magic, u32 n, u32 linhas (múltiplo de 256), 16 × u16 por sprite → textura RGBA16UI 1024 × linhas/256
+// coluna 9 = graphic do sprite (conversor novo ou tools/sprite_ids.py); toda zerada = dados antigos
 function loadSprites(buf) {
-  const rows = new DataView(buf).getUint32(8, true);
+  const n = new DataView(buf).getUint32(4, true), rows = new DataView(buf).getUint32(8, true);
+  const t = new Uint16Array(buf, 12, rows * 16);
+  statics.sprG = Uint16Array.from({ length: n }, (_, i) => t[i * 16 + 9]);
+  if (!statics.sprG.some(Boolean)) statics.sprG = null;
+  statics.sprT = t;
   return intTex(1024, rows / 256, gl.RGBA16UI, gl.RGBA_INTEGER, gl.UNSIGNED_SHORT, new Uint16Array(buf, 12, rows * 16));
+}
+// paredes sob o telhado que furam a face dele (empena, troncos de cabana, beiral). O shader desenha cada telha
+// meio tile para trás e ~5,5 z abaixo do z nominal (S_VS, uKind 0), então o teto cz do conversor (z da telha do
+// tile) fica acima do telhado visível. Aqui o teto de cada malha passa a ser a face do telhado montado no centro da
+// pegada, quando o tile tem telha e a malha passa dela; e a faixa fina de empena (até 6 z) sem nada acima no tile
+// pega o telhado mais baixo dos vizinhos na altura dela. Só dentro do chunk.
+const P16 = (v) => ((v << 16) >> 16) / 64;
+function clipGables(A, B, n0, count) {
+  const box = statics.sprBox, T = statics.sprT;
+  if (!box || !T || !n0) return;
+  const roof = new Map(), planes = new Map();
+  for (let i = 0; i < n0; i++) {
+    const a = A[i], k = a & 4095, tx = a & 63, ty = (a >> 6) & 63, tz = ((a >> 12) & 255) - 128;
+    if (!roof.has(k)) roof.set(k, []);
+    roof.get(k).push(tz);
+    // plano da telha como no shader: inclinação pelos vizinhos (bit 25) e recuo k
+    const o = (B[i] & 0xFFFF) * 16, e = P16(T[o + 10]), c = P16(T[o + 11]), sx = P16(T[o + 12]), sy = P16(T[o + 13]);
+    const ctr = c + 0.5 * (sx + sy);
+    let hs = 0.5 * (Math.abs(sx) + Math.abs(sy)), gx = 0, gy = 0, sl = false;
+    if ((a >>> 25) & 1) { gx = (((a >>> 26) & 7) - 4) * 1.5; gy = (((a >>> 29) & 7) - 4) * 1.5; hs = 0.5 * (Math.abs(gx) + Math.abs(gy)); sl = true; }
+    const kk = Math.max(0, Math.round((ctr - hs) * 2 / 11) * 0.5);
+    const p = { x0: tx - kk, y0: ty - kk, e, z: tz - 11 * kk, f: sl ? (u, v) => ctr + gx * (u - 0.5) + gy * (v - 0.5) : (u, v) => c + sx * (1 - u) + sy * (1 - v) };
+    for (let X = Math.max(0, Math.floor(p.x0 - e)); X <= Math.min(63, Math.floor(p.x0 + 1 + e)); X++)
+      for (let Y = Math.max(0, Math.floor(p.y0 - e)); Y <= Math.min(63, Math.floor(p.y0 + 1 + e)); Y++) {
+        const q = (Y << 6) | X;
+        if (!planes.has(q)) planes.set(q, []);
+        planes.get(q).push(p);
+      }
+  }
+  const surface = (X, Y) => {
+    let h = -Infinity;
+    for (const p of planes.get((Math.floor(Y) << 6) | Math.floor(X)) || []) {
+      const u = X - p.x0, v = Y - p.y0;
+      if (u >= -p.e && u <= 1 + p.e && v >= -p.e && v <= 1 + p.e) h = Math.max(h, p.z + p.f(u, v));
+    }
+    return h;
+  };
+  for (let i = n0; i < count; i++) {
+    const a = A[i], o = (B[i] & 0xFFFF) * 5, ht = box[o + 4];
+    if (!(ht > 0)) continue;
+    const x = a & 63, y = (a >> 6) & 63, z = ((a >> 12) & 255) - 128, cz = a >>> 26;
+    let top = Infinity;
+    if (roof.has(a & 4095)) {
+      // face mais baixa sob a pegada (cantos e centro, dentro do tile): peça grossa não fura o lado baixo da água
+      const cl = (v) => Math.min(1, Math.max(0, v)), X0 = cl(box[o]), X1 = cl(box[o + 1]), Y0 = cl(box[o + 2]), Y1 = cl(box[o + 3]);
+      let h = Infinity;
+      for (const [u, v] of [[X0, Y0], [X1, Y0], [X0, Y1], [X1, Y1], [(X0 + X1) / 2, (Y0 + Y1) / 2]]) {
+        const s = surface(Math.min(63.99, x + u), Math.min(63.99, y + v));
+        if (s > -Infinity) h = Math.min(h, s);
+      }
+      if (h === Infinity) h = -Infinity;
+      // passa da face; faixa baixa (até 12 z) com a base pouco acima dela (ponta da empena) some quase toda
+      if (z + ht > h + 0.5 && (h > z || (ht <= 12 && h > z - 4))) top = Math.max(0.5, h - z);
+    }
+    if (!cz && ht <= 6 && Math.min(box[o + 1] - box[o], box[o + 3] - box[o + 2]) < 0.4)
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        if (x + dx < 0 || x + dx > 63 || y + dy < 0 || y + dy > 63) continue;
+        for (const rz of roof.get(((y + dy) << 6) | (x + dx)) || []) if (rz >= z - 1 && rz < z + ht) top = Math.min(top, rz - z + 1);
+      }
+    if (top === Infinity) continue;
+    const nc = Math.min(63, Math.max(1, Math.round(top)));
+    if (!cz || nc < cz) A[i] = ((a & 0x3FFFFFF) | (nc << 26)) >>> 0;
+  }
+}
+// peça apoiada num móvel do mesmo tile (vitrine, mesa, balcão: malha larga de 1,5 a 12 z cujo topo chega na base
+// dela): os Itens 3D deixam na malha o que está exposto (arma, armadura deitada...)
+function onSurfaces(A, B, n0, count) {
+  const box = statics.sprBox, out = new Uint8Array(count), top = new Map();
+  if (!box) return out;
+  for (let i = n0; i < count; i++) {
+    const o = (B[i] & 0xFFFF) * 5, h = box[o + 4];
+    if (!(h >= 1.5 && h <= 12) || Math.min(box[o + 1] - box[o], box[o + 3] - box[o + 2]) < 0.45) continue;
+    const k = A[i] & 4095, z = ((A[i] >> 12) & 255) - 128;
+    if (!top.has(k)) top.set(k, []);
+    top.get(k).push([z, z + h]);
+  }
+  for (let i = n0; i < count; i++) {
+    const z = ((A[i] >> 12) & 255) - 128;
+    if ((top.get(A[i] & 4095) || []).some(([z0, z1]) => z > z0 && z <= z1 + 1)) out[i] = 1;
+  }
+  return out;
 }
 // MSH1: u32 magic, u32 vértices, u32 linhas | i16[linhas][2048][4] → textura RGBA16I 2048 × linhas
 function loadMeshes(buf) {
   const rows = new DataView(buf).getUint32(8, true);
+  // pegada e altura de cada malha (x0, x1, y0, y1 em tiles, topo em z): faixas de empena e decalques planos
+  const v = new Int16Array(buf, 12, rows * 8192), t = statics.sprT, n = t ? t.length / 16 : 0;
+  statics.sprBox = new Float32Array(n * 5);
+  for (let i = 0; i < n; i++) {
+    if ((t[i * 16 + 8] & 255) !== 0) continue;          // telhado: sem malha
+    const o = t[i * 16 + 10] | (t[i * 16 + 11] << 16), c = t[i * 16 + 12];
+    let x0 = 9, x1 = -9, y0 = 9, y1 = -9, z1 = 0;
+    for (let k = o; k < o + c; k++) {
+      const x = v[k * 8] / 256, y = v[k * 8 + 1] / 256, z = v[k * 8 + 2] / 16;
+      x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); z1 = Math.max(z1, z);
+    }
+    if (c) statics.sprBox.set([x0, x1, y0, y1, z1], i * 5);
+  }
   return intTex(2048, rows, gl.RGBA16I, gl.RGBA_INTEGER, gl.SHORT, new Int16Array(buf, 12, rows * 8192));
 }
 // ATL1: u32 magic, u16 lado, u16 páginas, u32 reservado, u16 RGB5_A1[páginas][lado][lado]
@@ -532,10 +657,57 @@ async function loadStatics(c) {
   const A = new Uint32Array(buf, head, count);
   let zMax = -128;
   for (let i = 0; i < count; i++) zMax = Math.max(zMax, ((A[i] >> 12) & 255) - 128);
+  clipGables(A, new Uint32Array(buf, head + count * 4, count), n[0] || 0, count);
+  c.sS = onSurfaces(A, new Uint32Array(buf, head + count * 4, count), n[0] || 0, count);
   c.sBuf = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, c.sBuf);
   gl.bufferData(gl.ARRAY_BUFFER, buf, gl.STATIC_DRAW);
   c.sCount = count; c.sN = n; c.sHead = head; c.sZMax = zMax + 120;
+  c.sA = A; c.sB = new Uint32Array(buf, head + count * 4, count);   // cópia na CPU para os Itens 3D
+}
+
+async function setStaticsMode(mode) {
+  settings.items = mode === 'items';
+  $('iradl').hidden = !settings.items;
+  if (!settings.items || items3d.layer || items3d.loading) return;
+  if (!statics.sprG) { items3d.err = 'sprites.bin sem graphic: rode tools/sprite_ids.py'; return; }
+  items3d.loading = true;
+  try { items3d.layer = await (await import('./items/maplayer.js')).createItemLayer(gl, canvas); }
+  catch (e) { console.error(e); items3d.err = 'falha ao carregar items/: ' + e.message; }
+  finally { items3d.loading = false; }
+}
+
+// a arquitetura (paredes, pisos, escadas, pontes...) dos chunks perto continua na malha do conversor;
+// o buffer kBuf guarda só essas instâncias, na mesma ordem por tipo de malha (kN[k] por tipo)
+function keepData(c, L) {
+  const kA = [], kB = [], kN = c.sN.map(() => 0);
+  for (let k = 1, i = c.sN[0]; k < c.sN.length; i += c.sN[k++])
+    for (let j = i; j < i + c.sN[k]; j++)
+      if (L.keepData(statics.sprG[c.sB[j] & 0xFFFF], statics.sprBox[(c.sB[j] & 0xFFFF) * 5 + 4], c.sS[j], c.sB[j] >>> 16)) { kA.push(c.sA[j]); kB.push(c.sB[j]); kN[k]++; }
+  const buf = new Uint32Array(kA.length * 2);
+  buf.set(kA); buf.set(kB, kA.length);
+  c.kBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, c.kBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, buf, gl.STATIC_DRAW);
+  c.kN = kN; c.kCount = kA.length;
+}
+function dropKept(c) { if (c.kBuf) gl.deleteBuffer(c.kBuf); c.kBuf = null; }
+
+// chunks perto da câmera mudaram (ou o telhado): remonta as instâncias dos modelos
+function updateItems3d() {
+  const L = items3d.layer, R = settings.itemRadius, ccx = Math.floor(cam.x / CH), ccy = Math.floor(cam.y / CH);
+  const near = [];
+  for (const c of chunks.values())
+    if (c.state === 'ready' && c.sA && Math.max(Math.abs(c.cx - ccx), Math.abs(c.cy - ccy)) <= R) near.push(c);
+  const sig = near.map((c) => c.cx + ',' + c.cy).sort().join(';') + '|' + settings.roofs;
+  if (sig !== items3d.sig) {
+    items3d.sig = sig;
+    for (const c of items3d.near) if (!near.includes(c)) dropKept(c);
+    items3d.near = new Set(near);
+    L.update(near.map((c) => ({ cx: c.cx, cy: c.cy, A: c.sA, B: c.sB, S: c.sS, n0: c.sN[0] || 0, count: c.sCount })), statics.sprG, settings.roofs, statics.sprBox);
+    for (const c of near) if (!c.kBuf) keepData(c, L);
+  }
+  L.tick(8);
 }
 
 // ------------------------------------------------------------ chunks
@@ -597,6 +769,7 @@ function freeChunk(c) {
   if (c.hTex) gl.deleteTexture(c.hTex);
   if (c.mTex) gl.deleteTexture(c.mTex);
   if (c.sBuf) gl.deleteBuffer(c.sBuf);
+  dropKept(c);
   c.hTex = c.mTex = c.sBuf = null;
 }
 
@@ -651,7 +824,7 @@ function chunkLod(cx, cy) {
 // ------------------------------------------------------------ câmera e controles
 // classic: vista 2D do cliente (projeção oblíqua, 44 px por tile × zoom); senão perspectiva livre
 const cam = { x: 1495, y: 1629, h: 0, yaw: Math.PI / 4, pitch: 0.75, dist: 70, classic: false, zoom: 1 };
-const settings = { zScale: 0.1286, radius: 6, statics: true, roofs: true, smooth: true };
+const settings = { zScale: 0.1286, radius: 6, statics: true, roofs: true, smooth: true, items: false, itemRadius: 2 };
 const keys = new Set();
 
 function setTarget(x, y) {
@@ -765,6 +938,18 @@ function setupUI() {
     el.addEventListener('change', () => { settings[k] = el.checked; });
   }
   $('opt-statics').disabled = !statics.ready;
+  bindRange('irad', 'itemRadius', (v) => `${v} chunks · ${(v * 2 + 1) * CH} tiles`);
+  const sm = $('smode'), q = new URLSearchParams(location.search);
+  sm.value = q.get('statics') === 'items' ? 'items' : 'data';
+  sm.disabled = !statics.ready;
+  // a escolha fica na URL (?statics=items) para recarregar igual
+  sm.addEventListener('change', () => {
+    const u = new URL(location.href);
+    if (sm.value === 'items') u.searchParams.set('statics', 'items'); else u.searchParams.delete('statics');
+    history.replaceState(null, '', u);
+    setStaticsMode(sm.value);
+  });
+  if (statics.ready) setStaticsMode(sm.value);
   $('opt-classic').checked = cam.classic;
   $('opt-classic').addEventListener('change', (e) => { cam.classic = e.target.checked; });
   $('goto').addEventListener('submit', (e) => {
@@ -785,7 +970,13 @@ function setupUI() {
 function updateUI(stats) {
   const z = groundZ(cam.x, cam.y);
   $('pos').textContent = `X ${Math.floor(cam.x)}  Y ${Math.floor(cam.y)}  Z ${z === null ? '?' : Math.round(z)}`;
-  $('stats').textContent = `${stats.fps} fps · ${stats.drawn}/${stats.ready} chunks · fila ${inFlight}\n${(stats.inst / 1000).toFixed(1)}k statics desenhados`;
+  let it3 = '';
+  if (settings.items) {
+    const L = items3d.layer, s = L && L.stats();
+    it3 = '\nitens 3D: ' + (items3d.err || (items3d.loading ? 'carregando…' : !s ? '—'
+      : `${(s.inst / 1000).toFixed(1)}k · ${s.models} modelos${s.queue ? ` · montando ${s.queue}` : ''}${s.missing ? ` · ${s.missing} sem item` : ''}`));
+  }
+  $('stats').textContent = `${stats.fps} fps · ${stats.drawn}/${stats.ready} chunks · fila ${inFlight}\n${(stats.inst / 1000).toFixed(1)}k statics desenhados${it3}`;
   const v = $('miniView'), w = settings.radius * 2 * CH;
   v.style.left = (cam.x / manifest.width * 100) + '%';
   v.style.top = (cam.y / manifest.height * 100) + '%';
@@ -816,17 +1007,19 @@ function frame(now) {
   gl.enable(gl.DEPTH_TEST);
 
   const target = [cam.x, cam.h, cam.y];
-  let eye, vp;
+  let eye, vp, proj, view;
   if (cam.classic) {
     const q = 11 * settings.zScale, l = Math.hypot(1, q, 1);   // olho distante ao longo do raio da projeção
     eye = [target[0] + 1000 / l, target[1] + 1000 * q / l, target[2] + 1000 / l];
-    vp = mat4.classic(target, settings.zScale, cam.zoom * dpr, w, h, settings.radius * CH * 3 + 400);
+    vp = proj = mat4.classic(target, settings.zScale, cam.zoom * dpr, w, h, settings.radius * CH * 3 + 400);
+    view = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
   } else {
     const cp = Math.cos(cam.pitch);
     eye = [target[0] + cam.dist * cp * Math.sin(cam.yaw), target[1] + cam.dist * Math.sin(cam.pitch), target[2] + cam.dist * cp * Math.cos(cam.yaw)];
     const far = settings.radius * CH * 1.6 + cam.dist;
-    const proj = mat4.perspective(0.85, w / h, Math.max(0.5, cam.dist * 0.02), far);
-    vp = mat4.mul(proj, mat4.lookAt(eye, target, [0, 1, 0]));
+    proj = mat4.perspective(0.85, w / h, Math.max(0.5, cam.dist * 0.02), far);
+    view = mat4.lookAt(eye, target, [0, 1, 0]);
+    vp = mat4.mul(proj, view);
   }
   const planes = frustumPlanes(vp);
   const fogEnd = settings.radius * CH * 0.95;
@@ -867,6 +1060,8 @@ function frame(now) {
   }
 
   let inst = 0;
+  const it3 = statics.ready && settings.statics && settings.items && items3d.layer;
+  if (it3) updateItems3d();
   if (statics.ready && settings.statics) {
     gl.useProgram(sprog);
     gl.bindVertexArray(svao);
@@ -896,13 +1091,17 @@ function frame(now) {
       if (k === 0 && !settings.roofs) continue;
       gl.uniform1i(SU.uKind, k);
       for (const c of vis) {
-        const n = c.sN[k];
+        // perto: malhas viram Itens 3D (telhados ficam); no modo misto a arquitetura fica (kBuf)
+        const kept = it3 && k > 0 && items3d.near.has(c);
+        if (kept && !c.kBuf) continue;
+        const N = kept ? c.kN : c.sN, n = N[k];
         if (!n) continue;
         let start = 0;
-        for (let j = 0; j < k; j++) start += c.sN[j];
-        gl.bindBuffer(gl.ARRAY_BUFFER, c.sBuf);
-        gl.vertexAttribIPointer(0, 1, gl.UNSIGNED_INT, 0, c.sHead + start * 4);
-        gl.vertexAttribIPointer(1, 1, gl.UNSIGNED_INT, 0, c.sHead + (c.sCount + start) * 4);
+        for (let j = 0; j < k; j++) start += N[j];
+        gl.bindBuffer(gl.ARRAY_BUFFER, kept ? c.kBuf : c.sBuf);
+        const head = kept ? 0 : c.sHead, count = kept ? c.kCount : c.sCount;
+        gl.vertexAttribIPointer(0, 1, gl.UNSIGNED_INT, 0, head + start * 4);
+        gl.vertexAttribIPointer(1, 1, gl.UNSIGNED_INT, 0, head + (count + start) * 4);
         gl.uniform2f(SU.uOrigin, c.cx * CH, c.cy * CH);
         gl.drawArraysInstanced(gl.TRIANGLES, 0, kindVerts[k], n);
         inst += n;
@@ -917,6 +1116,11 @@ function frame(now) {
         inst++;
       }
     }
+  }
+  if (it3) {
+    items3d.layer.render({ proj, view, w, h, zScale: settings.zScale, sunDir: SUN, fogColor: FOG,
+      fogNear: cam.classic ? 0 : cam.dist + fogEnd * 0.7, fogFar: cam.classic ? 0 : cam.dist + fogEnd });
+    inst += items3d.layer.stats().inst;
   }
 
   uiT += dt;
