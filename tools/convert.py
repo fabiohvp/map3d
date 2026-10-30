@@ -326,6 +326,7 @@ METRIC_Z = 0.1           # 1 z = 0,1 tile: referencial "métrico" das normais
 MIN_DIM = 0.08
 HULL_CELLS = 32          # células da grade do casco (o assets3d usa 420; aqui são milhões de instâncias)
 CARD_CELLS = 16          # casco fino: o recorte da art (alpha) já dá a silhueta
+TREE_SCALE = 1.5         # árvores 50% mais altas que a art (os cartões em X esticam na vertical)
 FLAT_CELLS = 12
 FLAT_THICK = 0.4         # espessura do slab deitado, em z
 DECAL_THICK = 1.0        # slab de entulho/tapete sobre o piso: acima da laje do piso no mesmo z
@@ -1495,7 +1496,7 @@ def plant_mesh(mask, height=0, tree=False):
         axis, y1 = w / 2, h - 22                     # raízes desenhadas à frente afundam no chão
     else:
         axis = (x0 + x1) / 2
-    k = min(1.0, 2 * max(height, 2) / max((y1 - y0) / PZ, 1e-6)) if not tree else 1.0
+    k = min(1.0, 2 * max(height, 2) / max((y1 - y0) / PZ, 1e-6)) if not tree else TREE_SCALE
     d = (axis - w / 2) / HT
     cx, cy = (1 + d) / 2, (1 - d) / 2
 
