@@ -26,6 +26,7 @@
     "generate:assets:flora": "python tools/catalog_flora.py",
     "generate:items": "python -I items/extract.py && python -I items/analyze.py && python -I items/classify.py && python -I items/mesh.py",
     "generate:anims": "python -I anims/extract.py",
+    "generate:model": "python -I anims/model3d.py",
     "generate:assets": "npm run generate:assets:catalog && npm run generate:assets:flora",
     "generate:all": "npm run generate:maps && npm run generate:assets",
     "maps": "npm run generate:maps",
