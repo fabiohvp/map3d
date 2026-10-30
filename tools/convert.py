@@ -1708,7 +1708,13 @@ def sprite_mesh(img, tx, cat, sub, name='', height=0, surface=False, plane_x=Non
         boxes, iou = fit_boxes(mask, kind in WALL_LIKE)
         need = {'architecture/stairs': 0.6, 'furniture/bed': 0.6}.get(kind, 0.5 if kind in WALL_LIKE else 0.8)
         if iou >= need:
-            return 'box' if len(boxes) == 1 else 'canto', box_mesh(mask, boxes)
+            mesh = box_mesh(mask, boxes)
+            top = max(b[4] for b in boxes)
+            if kind in WALL_LIKE and height > 0 and 0 < abs(top - height) <= 1.0:
+                # a caixa medida na art fica até 1 z abaixo do tiledata e abria fresta entre paredes
+                # empilhadas (andar sobre andar): a geometria vai até a altura do tiledata, a textura fica
+                mesh = (mesh[0] * np.array([1.0, 1.0, height / top]),) + tuple(mesh[1:])
+            return 'box' if len(boxes) == 1 else 'canto', mesh
         if kind == 'furniture/chair' and re.search(r'\bcovered\b', name, re.I):
             # cadeira coberta por lençol: a caixa única fica um cubo baixo; assento + encosto alto
             boxes, iou = seat_back_boxes(mask)
@@ -1857,6 +1863,43 @@ def under_roof(gx, gy, z, sid, sflags, reach=12):
     return (k[p] >= q) & (k[p] - q <= reach) & ~roof
 
 
+SKIRT_ID = 4      # variante de rodapé: id + (SKIRT_ID + vão)·0x10000 (1 e 2 são as peças penduradas)
+SKIRT_MAX = 12    # vão máximo (z) entre a parede e o apoio que o rodapé fecha
+
+
+def wall_skirts(gx, gy, z, sid, sheight, walls, ground, tid):
+    """Paredes que o UO desenha acima do apoio: casa com piso de tábuas 10 z acima do terreno, parede
+    sobre base de pedra mais baixa. No 2D a art cobre o vão; no 3D vira buraco embaixo da parede.
+    Apoio = topo mais alto de outro static no tile que não passa da base da parede, ou o terreno (canto
+    mais baixo do tile, 1 z enterrado). -> (índices das paredes, vão em z)"""
+    idx = np.nonzero(np.isin(sid, list(walls)))[0]
+    Hm, Wm = ground.shape
+    x, y = gx[idx].astype(np.int64), gy[idx].astype(np.int64)
+    x1, y1 = np.minimum(x + 1, Wm - 1), np.minimum(y + 1, Hm - 1)
+    land = np.minimum.reduce([ground[y, x], ground[y, x1], ground[y1, x], ground[y1, x1]]).astype(np.int64) - 1
+    land = np.where(np.isin(tid[y, x], list(VOID_LAND)), 10 ** 6, land)   # sem chão desenhado: nada a fechar
+    cell = gx.astype(np.int64) * 8192 + gy
+    top = z.astype(np.int64) + sheight[sid]
+    k = np.sort(cell * 1024 + top + 512)
+    q = cell[idx] * 1024 + z[idx].astype(np.int64) + 512
+    p = np.searchsorted(k, q, side='right') - 1
+    below = np.where((p >= 0) & (k[np.maximum(p, 0)] // 1024 == cell[idx]), k[np.maximum(p, 0)] % 1024 - 512, -10 ** 6)
+    gap = z[idx].astype(np.int64) - np.maximum(land, below)
+    ok = (gap >= 1) & (gap <= SKIRT_MAX)
+    return idx[ok], gap[ok]
+
+
+def skirt_mesh(mesh, d):
+    """Rodapé de d z sob a parede: as faces verticais da caixa vão de −d a 0, com a faixa da art 1 z acima
+    da base (viga ou pedra de baixo) esticada na vertical."""
+    P, px, n = mesh
+    keep = np.repeat(np.abs(n[:, 2]).reshape(-1, 3).max(1) < 0.5, 3)
+    P, px, n = P[keep].copy(), px[keep].copy(), n[keep]
+    px[:, 1] += PZ * (P[:, 2] - 1.0)
+    P[:, 2] = np.where(P[:, 2] > 0.5, 0.0, -float(d))
+    return P, px, n
+
+
 def write_meshes(path, meshes):
     """MSH1: u32 magic, u32 vértices, u32 linhas | linhas × 2048 × i16[4], 2 texels por vértice:
     (lx·256, ly·256, lz·16, 0) (u·8, v·8, normal octaédrica ·32767). Devolve o 1º vértice de cada malha."""
@@ -1956,10 +1999,13 @@ def build_statics(src, n, W, H, out_map, mountains=0.0):
     print('lendo statics...')
     sflags, sheight, snodraw, snames = src.static_tiledata()
     gx, gy, z, sid, hue = src.read_statics(n, W, H)
+    tid, lz = src.read_map(n, W, H)
+    ground = lz.astype(np.int16)    # altura do terreno como o viewer desenha (com as montanhas)
     if mountains > 0:
         # o que está sobre a montanha sobe junto com o terreno (o que fica abaixo do chão, não)
-        tid, lz = src.read_map(n, W, H)
-        lift = mountain_lift(src, n, tid, lz, mountains)[gy, gx]
+        lift_map = mountain_lift(src, n, tid, lz, mountains)
+        ground = ground + lift_map
+        lift = lift_map[gy, gx]
         up = (lift > 0) & (z >= lz[gy, gx].astype(np.int16) - 2)
         z = np.where(up, np.minimum(z.astype(np.int16) + lift, 127), z).astype(z.dtype)
         print(f'  {int(up.sum())} statics sobem com as montanhas')
@@ -2013,6 +2059,7 @@ def build_statics(src, n, W, H, out_map, mountains=0.0):
     print(f'  {len(hung)} sprites pendurados, {int(is_h.sum())} instâncias, {int(north.sum() + west.sum())} na parede, {len(wcells)} células de parede')
     sprites, imgs, meshes = {}, {}, {}
     engines = {}
+    skirtable = set()
     fountain = fountain_groups(src, gx, gy, z, sid, snames)
     plane_axes, plane_shift = multi_plane_layout(gx, gy, z, sid, snames, sflags, sheight, src.static_art)
     for s in np.unique(vid).tolist():
@@ -2052,6 +2099,18 @@ def build_statics(src, n, W, H, out_map, mountains=0.0):
         meshes[s] = mesh
         sprites[s] = (SK_MESH, None)
         engines[eng] = engines.get(eng, 0) + 1
+        if eng in ('box', 'canto') and f'{cat}/{sub}' in ('architecture/wall', 'architecture/window'):
+            skirtable.add(s)
+    # rodapés: variantes id + (SKIRT_ID + vão)·0x10000 na mesma célula e z da parede
+    wi, gap = wall_skirts(gx, gy, z, sid, sheight, skirtable, ground, tid)
+    sv = vid[wi] + ((SKIRT_ID + gap) << 16)
+    for v in np.unique(sv).tolist():
+        meshes[v] = skirt_mesh(meshes[v & 0xFFFF], (v >> 16) - SKIRT_ID)
+        sprites[v] = (SK_MESH, None)
+        imgs[v] = imgs[v & 0xFFFF]
+    gx, gy, z, sid, hue, tie = (np.r_[a, a[wi]] for a in (gx, gy, z, sid, hue, tie))
+    vid = np.r_[vid, sv]
+    engines['rodapé'] = len(wi)
     print('  ' + ', '.join(f'{k} {v}' for k, v in sorted(engines.items())))
     mfirst, mtotal = write_meshes(os.path.join(out_map, 'meshes.bin'), meshes)
     print(f'  malhas: {mtotal} vértices ({mtotal * 16 / 1e6:.1f} MB)')
@@ -2069,6 +2128,8 @@ def build_statics(src, n, W, H, out_map, mountains=0.0):
     x = y = GUTTER
     row = 0
     for s in sorted(imgs, key=lambda s: -trims[s][3]):
+        if s >> 16 >= SKIRT_ID:
+            continue    # rodapé usa a art da parede: mesmo lugar no atlas
         tw, th = trims[s][2], trims[s][3]
         if x + tw + GUTTER > ATLAS:
             x = GUTTER; y += row + GUTTER; row = 0
@@ -2077,6 +2138,9 @@ def build_statics(src, n, W, H, out_map, mountains=0.0):
         place[s] = (pages - 1, x, y)
         x += tw + GUTTER
         row = max(row, th)
+    for s in imgs:
+        if s >> 16 >= SKIRT_ID:
+            place[s] = place[s & 0xFFFF]
     atlas = np.zeros((pages, ATLAS, ATLAS), np.uint16)
     index = {s: i for i, s in enumerate(sorted(imgs))}
     table = np.zeros((-(-len(index) // 256) * 256, 16), np.uint16)
