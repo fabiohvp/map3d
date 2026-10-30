@@ -976,19 +976,26 @@ def statue_mesh(mask):
 MULTI_PLANE_NAMES = r'sails?\b|pulley crane'
 
 
-def multi_plane_axes(gx, gy, sid, snames):
-    """Eixo das peças de vela/bandeira/guindaste: {sprite: True se a peça montada se estende em x}. Cada
-    grupo conectado (8 vizinhos) de tiles com peças de mesmo nome vota no eixo mais comprido da sua caixa;
-    o sprite fica com a maioria das suas instâncias. Peça solta (grupo de 1 tile) não vota."""
+def multi_plane_layout(gx, gy, z, sid, snames, sflags, sheight, art):
+    """Peças de vela/bandeira/guindaste montadas em vários tiles -> (eixo, recuo) por sprite.
+    eixo: True se a peça montada se estende em x. Cada grupo conectado (8 vizinhos) de tiles com peças de
+    mesmo nome vota no eixo mais comprido da sua caixa; o sprite fica com a maioria. Peça solta não vota.
+    recuo k (tiles): com o plano pelo centro do tile, o pé do mastro fica muito acima do convés (as fatias
+    são desenhadas nos tiles da frente); (x − k, y − k, z − 11k) cai no mesmo pixel, então o grupo recua
+    até o pixel mais baixo encostar na superfície mais alta do convés em volta."""
     named = {s for s in np.unique(sid).tolist() if s < len(snames) and re.search(MULTI_PLANE_NAMES, snames[s], re.I)}
     sel = np.isin(sid, list(named))
-    inst = list(zip(gx[sel].tolist(), gy[sel].tolist(), sid[sel].tolist()))
-    cells = {(snames[s], x, y) for x, y, s in inst}
-    ext = {}
+    inst = list(zip(gx[sel].tolist(), gy[sel].tolist(), z[sel].tolist(), sid[sel].tolist()))
+    cells = {}
+    for x, y, zz, s in inst:
+        cells.setdefault((snames[s], x, y), []).append((zz, s))
+    comps = []
+    seen = set()
     for key in cells:
-        if key in ext:
+        if key in seen:
             continue
-        comp, todo, seen = [], [key], {key}
+        comp, todo = [], [key]
+        seen.add(key)
         while todo:
             k = todo.pop()
             comp.append(k)
@@ -998,15 +1005,43 @@ def multi_plane_axes(gx, gy, sid, snames):
                     if q in cells and q not in seen:
                         seen.add(q)
                         todo.append(q)
-        xs, ys = [k[1] for k in comp], [k[2] for k in comp]
-        for k in comp:
-            ext[k] = (max(xs) - min(xs), max(ys) - min(ys))
+        comps.append(comp)
     votes = {}
-    for x, y, s in inst:
-        ex, ey = ext[(snames[s], x, y)]
+    for comp in comps:
+        xs, ys = [k[1] for k in comp], [k[2] for k in comp]
+        ex, ey = max(xs) - min(xs), max(ys) - min(ys)
         if ex != ey:
-            votes.setdefault(s, []).append(ex > ey)
-    return {s: sum(v) * 2 > len(v) for s, v in votes.items() if sum(v) * 2 != len(v)}
+            for k in comp:
+                for _, s in cells[k]:
+                    votes.setdefault(s, []).append(ex > ey)
+    axes = {s: sum(v) * 2 > len(v) for s, v in votes.items() if sum(v) * 2 != len(v)}
+
+    low = {}                                         # z do pixel mais baixo, plano pelo centro do tile
+    for s in axes:
+        img = art(s)
+        if img is None or not img.any():
+            continue
+        h, w = img.shape
+        vs, us = np.nonzero(img)
+        du = (us + 0.5 - w / 2) / HT
+        low[s] = float(((HT * (1.0 + (du if axes[s] else -du)) + h - 44 - (vs + 1)) / PZ).min())
+    surf = (sflags[np.minimum(sid, len(sflags) - 1)] & np.uint64(SF_SURFACE)) != 0
+    tops = {}
+    for x, y, zz, s in zip(gx[surf].tolist(), gy[surf].tolist(), z[surf].tolist(), sid[surf].tolist()):
+        tops.setdefault((x, y), []).append(zz + int(sheight[s]))
+    shifts = {}
+    for comp in comps:
+        mem = [(zz, s) for k in comp for zz, s in cells[k] if s in low]
+        if not mem:
+            continue
+        glow, zmin = min(zz + low[s] for zz, s in mem), min(zz for zz, _ in mem)
+        xs, ys = [k[1] for k in comp], [k[2] for k in comp]
+        deck = [t for x in range(min(xs) - 2, max(xs) + 3) for y in range(min(ys) - 2, max(ys) + 3)
+                for t in tops.get((x, y), ()) if t <= zmin + 2]
+        if deck and (glow - max(deck)) / 11 > 0.5:
+            for zz, s in mem:
+                shifts.setdefault(s, []).append((glow - max(deck)) / 11)
+    return axes, {s: float(np.median(v)) for s, v in shifts.items()}
 
 
 def axis_plane(mask, along_x, c=0.5):
@@ -1553,15 +1588,18 @@ def rail_parts(mask, min_px=8):
     return tuple(np.concatenate(t) for t in tris)
 
 
-def sprite_mesh(img, tx, cat, sub, name='', height=0, surface=False, plane_x=None):
-    """-> (motor, (pos, pixel, normal)) em listas de triângulos. plane_x: peça de vela/guindaste montado
-    em vários tiles, com o eixo (True = x) vindo da disposição das peças no mapa (multi_plane_axes)."""
+def sprite_mesh(img, tx, cat, sub, name='', height=0, surface=False, plane_x=None, plane_k=0.0):
+    """-> (motor, (pos, pixel, normal)) em listas de triângulos. plane_x, plane_k: peça de vela/guindaste
+    montada em vários tiles, com o eixo (True = x) e o recuo vindos do mapa (multi_plane_layout)."""
     mask = img != 0
     if re.search(MULTI_PLANE_NAMES, name, re.I):
         # vela, bandeira e guindaste: fatias de 1 tile de uma peça grande e fina; todas no mesmo plano
-        # vertical pelo centro do tile, no eixo da fileira de peças (sem fileira, pela verga)
+        # vertical pelo centro do tile, no eixo da fileira de peças (sem fileira, pela verga), recuado
+        # pelo raio do UO até o mastro apoiar no convés
         mesh = _plane_mesh(mask, axis_plane(mask, plane_x)) if plane_x is not None else sail_mesh(mask)
         if mesh is not None:
+            if plane_k:
+                mesh = (mesh[0] - np.array([plane_k, plane_k, 11.0 * plane_k]),) + tuple(mesh[1:])
             return 'vela', mesh
     if re.fullmatch(r'\s*cannon\s*', name, re.I):
         mesh = cannon_mesh(img)                  # cano cilíndrico deitado + reparo em caixa
@@ -1935,7 +1973,7 @@ def build_statics(src, n, W, H, out_map):
     sprites, imgs, meshes = {}, {}, {}
     engines = {}
     fountain = fountain_groups(src, gx, gy, z, sid, snames)
-    plane_axes = multi_plane_axes(gx, gy, sid, snames)
+    plane_axes, plane_shift = multi_plane_layout(gx, gy, z, sid, snames, sflags, sheight, src.static_art)
     for s in np.unique(vid).tolist():
         img = src.static_art(s & 0xFFFF)
         if img is None or not img.any():
@@ -1969,7 +2007,7 @@ def build_statics(src, n, W, H, out_map):
         if cat == 'unknown' and sheight[s] <= 1 and floor_iou(mask) >= 0.85:
             cat, sub = 'architecture', 'floor'  # losango de chão sem nome conhecido (placas das virtudes)
         eng, mesh = sprite_mesh(img, tx, cat, sub, snames[s] if s < len(snames) else '', int(sheight[s]),
-                                bool(int(sflags[s]) & SF_SURFACE), plane_axes.get(s))
+                                bool(int(sflags[s]) & SF_SURFACE), plane_axes.get(s), plane_shift.get(s, 0.0))
         meshes[s] = mesh
         sprites[s] = (SK_MESH, None)
         engines[eng] = engines.get(eng, 0) + 1
