@@ -829,7 +829,7 @@ function chunkLod(cx, cy) {
 // ------------------------------------------------------------ câmera e controles
 // classic: vista 2D do cliente (projeção oblíqua, 44 px por tile × zoom); senão perspectiva livre
 const cam = { x: 1495, y: 1629, h: 0, yaw: Math.PI / 4, pitch: 0.75, dist: 70, classic: false, zoom: 1 };
-const settings = { zScale: 0.1286, radius: 6, statics: true, roofs: true, smooth: true, items: false, itemRadius: 2 };
+const settings = { zScale: 0.18, radius: 6, statics: true, roofs: true, smooth: true, items: false, itemRadius: 2 };
 const keys = new Set();
 
 function setTarget(x, y) {
@@ -1145,7 +1145,6 @@ function frame(now) {
   }
   BUILD = manifest.build ? `?v=${manifest.build}` : '';
   exists = Uint8Array.from(atob(manifest.chunks), (ch) => ch.charCodeAt(0));
-  settings.zScale = manifest.zScale;
   const [mb, b64, b128] = await Promise.all([
     getBuf(`${DATA}/map${MAP}/materials.bin`), getBuf(`${DATA}/map${MAP}/land64.bin`), getBuf(`${DATA}/map${MAP}/land128.bin`)]);
   matTex = loadMaterials(mb);
