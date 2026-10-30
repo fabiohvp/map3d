@@ -904,72 +904,73 @@ def cylinder_mesh(mask, segs=16):
     return _expand(P, px, tris, N)
 
 
-def statue_mesh(mask, segs=12, ring_px=8):
-    """Estátua em pedestal: sólido de revolução no eixo do pé da silhueta, raio de cada anel pelo trecho
-    contínuo da linha que passa no eixo (lança, braço e estandarte finos ficam de fora) e o que sobra
-    num plano voltado para a câmera pelo eixo. Da vista do UO é a art; de lado tem volume (o casco
-    inflado virava lâmina). Textura: projeção da art no pixel de cada ponto (exata na frente; a metade
-    de trás espelha a da frente no eixo)."""
+def pedestal_rows(mask):
+    """Pedestal na base da silhueta: de baixo, o losango de baixo abre até as quinas e as laterais da
+    caixa sobem retas (colunas da art constantes; degraus curtos de até 2 px, como plinto e capitel).
+    Para quando uma borda entra 1 px por linha por 3 linhas (o losango do tampo) ou fica 8 linhas sem
+    trecho reto. -> (linha de baixo, linha de cima) das laterais, ou None."""
+    x0, y0, x1, y1 = _bbox(mask)
+    L = {v: int(np.nonzero(mask[v])[0][0]) for v in range(y0, y1) if mask[v].any()}
+    R = {v: int(np.nonzero(mask[v])[0][-1]) for v in range(y0, y1) if mask[v].any()}
+    v = y1 - 1
+    while v - 1 in L and L[v - 1] <= L[v] and R[v - 1] >= R[v] and (L[v - 1] < L[v] or R[v - 1] > R[v]):
+        v -= 1
+    c = t = v
+    run = since = inl = inr = 0
+    while v - 1 in L:
+        u = v - 1
+        dl, dr = L[u] - L[v], R[u] - R[v]
+        if max(abs(dl), abs(dr)) > 2:
+            break
+        inl = inl + 1 if dl > 0 else 0
+        inr = inr + 1 if dr < 0 else 0
+        if inl >= 3 or inr >= 3:
+            break
+        run = run + 1 if dl == 0 and dr == 0 else 0
+        since += 1
+        if run >= 3:
+            t, since = u, 0
+        if since > 8:
+            break
+        v = u
+    return (c, t) if c - t >= 3 else None
+
+
+def statue_mesh(mask):
+    """Estátua: o pedestal (pedestal_rows) vira caixa com a pegada medida e a altura das laterais retas;
+    a figura em cima vira dois cartões em X nos eixos x e y pelo centro do pedestal, como as árvores:
+    de qualquer lado é a figura inteira. Sem pedestal, a figura toda vai para os cartões."""
     h, w = mask.shape
     x0, y0, x1, y1 = _bbox(mask)
-    foot = np.nonzero(mask[max(y0, y1 - (y1 - y0) // 4):y1].any(0))[0]
-    axis = (foot[0] + foot[-1] + 1) / 2.0
-    a = int(axis)
+    parts = []
+    ped = pedestal_rows(mask)
+    if ped is not None:
+        c, t = ped
+        base = mask.copy()
+        base[:t] = False
+        bx0, by0, bx1, by1, _ = fit_box(base)
+        parts.append(box_mesh(mask, [(bx0, by0, bx1, by1, (c - t) / PZ)]))
+        cx, cy = (bx0 + bx1) / 2, (by0 + by1) / 2
+        fig = mask.copy()
+        fig[t:] = False
+    else:
+        fig = mask
+        d = ((x0 + x1) / 2 - w / 2) / HT
+        cx, cy = (1 + d) / 2, (1 - d) / 2
+    s = cx + cy
+    if fig.sum() >= 12:
+        axis = w / 2 + HT * (cx - cy)
 
-    def core(v):
-        row = mask[v]
-        if not row[a]:
-            return 0.0
-        l = a
-        while l > 0 and row[l - 1]:
-            l -= 1
-        r = a
-        while r + 1 < w and row[r + 1]:
-            r += 1
-        return max(axis - l, r + 1 - axis)
-
-    d = (axis - w / 2) / HT
-    s0 = 1.0                                         # eixo no centro do tile: lx + ly = 1
-    cx, cy = (s0 + d) / 2, (s0 - d) / 2
-    # anel k: linha da art v; ponto da frente (lx + ly = s0 + r·√2) cai na linha v
-    vs = list(range(y1 - 1, y0 - 1, -ring_px)) + [y0]
-    rs = np.array([max(core(v), 1.0) / PXP for v in vs])
-    zs = np.array([(HT * (s0 + r * SQ2) + h - 44 - (v + 1)) / PZ for v, r in zip(vs, rs)])
-    zs = np.maximum.accumulate(np.maximum(zs, 0.0))
-    th = np.linspace(0, 2 * math.pi, segs, endpoint=False) + math.pi / 4   # θ = π/4: frente (+x +y)
-    ring = np.stack([np.cos(th), np.sin(th)], 1)
-    K = len(vs)
-    side = np.concatenate([np.column_stack([cx + r * ring[:, 0], cy + r * ring[:, 1], np.full(segs, z)])
-                           for r, z in zip(rs, zs)])
-    cap = np.concatenate([side[-segs:], [[cx, cy, zs[-1]]]])
-    P = np.concatenate([side, cap])
-    N = np.concatenate([np.tile(np.column_stack([ring, np.zeros(segs)]), (K, 1)),
-                        np.tile([0.0, 0.0, 1.0], (segs + 1, 1))])
-    tris = []
-    for k in range(K - 1):
-        for i in range(segs):
-            p, q = k * segs + i, k * segs + (i + 1) % segs
-            tris += [(p, q, q + segs), (p, q + segs, p + segs)]
-    c0, mid = len(side), len(P) - 1
-    tris += [(c0 + i, c0 + (i + 1) % segs, mid) for i in range(segs)]
-    # metade de trás: o pixel do ponto espelhado no plano do eixo voltado para a câmera
-    S = P.copy()
-    back = (S[:, 0] + S[:, 1]) < s0
-    off = s0 - (S[back, 0] + S[back, 1])
-    S[back, 0] += off
-    S[back, 1] += off
-    px = _proj(S, w, h)
-    solid = _expand(P, px, np.array(tris, np.int64), N)
-    # sobra: pixels fora do raio do anel daquela linha -> plano voltado para a câmera no eixo
-    rest = mask.copy()
-    for v in range(y0, y1):
-        k = int(np.argmin([abs(v - u) for u in vs]))
-        r = rs[k] * PXP
-        rest[v, max(0, int(math.floor(axis - r))):int(math.ceil(axis + r))] = False
-    if rest.sum() < 12:
-        return solid
-    card = _plane_mesh(rest, _facing_plane(rest, s0))
-    return tuple(np.concatenate([solid[k], card[k]]) for k in range(3))
+        def plane(along_x):
+            def place(sx, sy):
+                t_ = (sx - axis) / HT
+                lz = (HT * s + h - 44 - sy) / PZ          # altura do pixel no eixo (raio do UO)
+                if along_x:
+                    return np.stack([cx + t_, np.full(len(sx), cy), lz], 1)
+                return np.stack([np.full(len(sx), cx), cy - t_, lz], 1)
+            return place
+        parts += [_plane_mesh(fig, plane(True)), _plane_mesh(fig, plane(False))]
+    return tuple(np.concatenate([m[i] for m in parts]) for i in range(3))
 
 
 def bed_mesh(img, H):
@@ -1471,7 +1472,7 @@ def sprite_mesh(img, tx, cat, sub, name='', height=0, surface=False):
         if mesh is not None:
             return 'cilindro', mesh
     if re.fullmatch(r'\s*(warrior )?statue\s*', name, re.I) and mask.shape[0] >= 80:
-        return 'estatua', statue_mesh(mask)        # estátua alta: revolução + plano (o casco virava lâmina)
+        return 'estatua', statue_mesh(mask)        # pedestal em caixa + figura em X (o casco virava lâmina)
     if cat == 'furniture' and sub == 'bed':
         return 'cama', bed_mesh(img, height if height > 0 else 5)
     if re.search(r'\bfountain\b', name, re.I) and mask.shape[1] <= 46 and mask.shape[0] <= 60:
