@@ -2537,17 +2537,21 @@ class EnhancedSource:
 def smooth_heights(z, keep, k):
     """Puxa cada tile a fração k do caminho até a média dos vizinhos 3x3 (ele incluso): picos e
     serrilhados de montanha baixam sem achatar o relevo. Tiles em keep (void) não mudam nem entram
-    na média dos vizinhos."""
+    na média dos vizinhos. k > 1 vira passadas repetidas (1,2 = uma passada cheia + 0,2 de outra),
+    em vez de passar da média e inverter os desníveis."""
     if k <= 0:
         return z
     v = (~keep).astype(np.float32)
-    zf = z.astype(np.float32) * v
-    sp, cp = np.pad(zf, 1), np.pad(v, 1)
-    s = sum(sp[dy:dy + z.shape[0], dx:dx + z.shape[1]] for dy in range(3) for dx in range(3))
-    c = sum(cp[dy:dy + z.shape[0], dx:dx + z.shape[1]] for dy in range(3) for dx in range(3))
-    mean = s / np.maximum(c, 1)
-    out = np.rint(z + k * (mean - z)).clip(-128, 127).astype(z.dtype)
-    return np.where(keep, z, out)
+    cp = np.pad(v, 1)
+    c = np.maximum(sum(cp[dy:dy + z.shape[0], dx:dx + z.shape[1]] for dy in range(3) for dx in range(3)), 1)
+    zf = z.astype(np.float32)
+    while k > 1e-6:
+        step = min(k, 1.0)
+        sp = np.pad(zf * v, 1)
+        mean = sum(sp[dy:dy + z.shape[0], dx:dx + z.shape[1]] for dy in range(3) for dx in range(3)) / c
+        zf = np.where(keep, zf, zf + step * (mean - zf))
+        k -= step
+    return np.rint(zf).clip(-128, 127).astype(z.dtype)
 
 
 def build_terrain(src, n, W, H, out_map, smooth=0.0):
@@ -2644,7 +2648,7 @@ def main():
     ap.add_argument('--out', default=os.path.normpath(os.path.join(HERE, '..', 'data')))
     ap.add_argument('--only', choices=('all', 'terrain', 'statics'), default='all')
     ap.add_argument('--smooth', type=float, default=0.5,
-                    help='fração (0..1) que cada tile de terreno anda até a média dos vizinhos 3x3')
+                    help='fração (acima de 1 = passadas extras) que cada tile de terreno anda até a média dos vizinhos 3x3')
     a = ap.parse_args()
     W, H = MAPS[a.map]
     out_map = os.path.join(a.out, f'map{a.map}')
