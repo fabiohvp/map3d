@@ -973,6 +973,123 @@ def statue_mesh(mask):
     return tuple(np.concatenate([m[i] for m in parts]) for i in range(3))
 
 
+MULTI_PLANE_NAMES = r'sails?\b|pulley crane'
+
+
+def multi_plane_axes(gx, gy, sid, snames):
+    """Eixo das peças de vela/bandeira/guindaste: {sprite: True se a peça montada se estende em x}. Cada
+    grupo conectado (8 vizinhos) de tiles com peças de mesmo nome vota no eixo mais comprido da sua caixa;
+    o sprite fica com a maioria das suas instâncias. Peça solta (grupo de 1 tile) não vota."""
+    named = {s for s in np.unique(sid).tolist() if s < len(snames) and re.search(MULTI_PLANE_NAMES, snames[s], re.I)}
+    sel = np.isin(sid, list(named))
+    inst = list(zip(gx[sel].tolist(), gy[sel].tolist(), sid[sel].tolist()))
+    cells = {(snames[s], x, y) for x, y, s in inst}
+    ext = {}
+    for key in cells:
+        if key in ext:
+            continue
+        comp, todo, seen = [], [key], {key}
+        while todo:
+            k = todo.pop()
+            comp.append(k)
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    q = (k[0], k[1] + dx, k[2] + dy)
+                    if q in cells and q not in seen:
+                        seen.add(q)
+                        todo.append(q)
+        xs, ys = [k[1] for k in comp], [k[2] for k in comp]
+        for k in comp:
+            ext[k] = (max(xs) - min(xs), max(ys) - min(ys))
+    votes = {}
+    for x, y, s in inst:
+        ex, ey = ext[(snames[s], x, y)]
+        if ex != ey:
+            votes.setdefault(s, []).append(ex > ey)
+    return {s: sum(v) * 2 > len(v) for s, v in votes.items() if sum(v) * 2 != len(v)}
+
+
+def axis_plane(mask, along_x, c=0.5):
+    """place() de um plano vertical nos eixos do mapa pelo centro do tile (ly = c se along_x, senão lx = c):
+    cada pixel no seu raio do UO (exato). Se o pixel mais baixo cair abaixo do chão, o plano vem para a
+    frente até ele apoiar (guindaste: pernas e pé à frente do eixo)."""
+    h, w = mask.shape
+    vs, us = np.nonzero(mask)
+    du = (us + 0.5 - w / 2) / HT
+    zmin = float(((HT * (2 * c + (du if along_x else -du)) + h - 44 - (vs + 1)) / PZ).min()) if len(vs) else 0.0
+    if zmin < 0:
+        c -= zmin * PZ / (2 * HT)
+
+    def place(sx, sy):
+        du = (sx - w / 2) / HT                      # lx − ly
+        lx, ly = (c + du, np.full_like(du, c)) if along_x else (np.full_like(du, c), c - du)
+        return np.stack([lx, ly, (HT * (lx + ly) + h - 44 - sy) / PZ], 1)
+    return place
+
+
+def sail_mesh(mask):
+    """Vela: pano num plano vertical pelo mastro (centro do tile), no eixo x ou y conforme a inclinação
+    da verga (contorno de cima nas colunas do meio: desce para a direita = eixo x)."""
+    x0, y0, x1, y1 = _bbox(mask)
+    cols = np.arange(x0 + (x1 - x0) // 5, x1 - (x1 - x0) // 5)
+    cols = cols[mask[:, cols].any(0)]
+    if len(cols) < 4:
+        return None
+    top = np.array([np.nonzero(mask[:, j])[0][0] for j in cols], float)
+    return _plane_mesh(mask, axis_plane(mask, np.polyfit(cols, top, 1)[0] > 0))
+
+
+def cannon_mesh(img, segs=8):
+    """Canhão: o cano (pixels cinza da art) vira um cilindro deitado no eixo x ou y (a faixa do cano desce
+    para a direita = eixo x) pelo centro do tile, com a altura e o raio medidos na faixa; o reparo e as
+    rodas (o resto) viram a caixa medida. A textura do cilindro é a projeção da art; a metade de trás
+    reusa o pixel do ponto oposto no eixo. -> None sem cano."""
+    mask = img != 0
+    h, w = mask.shape
+    r5, g5, b5 = ((img >> 10) & 31).astype(int), ((img >> 5) & 31).astype(int), (img & 31).astype(int)
+    gray = mask & (np.abs(r5 - g5) <= 2) & (np.abs(g5 - b5) <= 3)
+    if gray.sum() < 40:
+        return None
+    vs, us = np.nonzero(gray)
+    uu, vv = us + 0.5, vs + 0.5
+    along_x = np.corrcoef(uu, vv)[0, 1] > 0
+    sg = 1.0 if along_x else -1.0
+    off = vv - sg * uu                               # constante na linha do eixo do cano
+    b = float(np.median(off))
+    half = (np.percentile(off, 95) - np.percentile(off, 5)) / (2 * SQ2)
+    r = half / (math.hypot(2 * HT, PZ / METRIC_Z) / SQ2)   # raio em tiles (z métrico: 1 z = 0,1 tile)
+    c = 0.5
+    zc = (2 * HT * c + h - 44 - sg * w / 2 - b) / PZ
+    along = (uu + vv) if along_x else (vv - uu)
+    k = PZ * zc - (h - 44) + (-w / 2 if along_x else w / 2)
+    t0, t1 = [(np.percentile(along, p) + k) / (2 * HT) for p in (1, 99)]
+    th = np.linspace(0, 2 * math.pi, segs, endpoint=False)
+    ca, sa = np.cos(th), np.sin(th)
+
+    def ring(t, sgn=1.0):
+        q, zz = sgn * r * ca, zc + sgn * r * sa / METRIC_Z
+        return (np.stack([np.full(segs, t), c + q, zz], 1) if along_x
+                else np.stack([c + q, np.full(segs, t), zz], 1))
+    P = np.concatenate([ring(t0), ring(t1), [[t0, c, zc] if along_x else [c, t0, zc]],
+                        [[t1, c, zc] if along_x else [c, t1, zc]]])
+    # ponto da frente para a textura: normal (q, z métrico) contra o raio da câmera (1, 1, 1,1) do UO
+    front = (ca + sa * 1.1 / 1.0) >= 0
+    S = P.copy()
+    S[:segs][~front] = ring(t0, -1.0)[~front]
+    S[segs:2 * segs][~front] = ring(t1, -1.0)[~front]
+    tris = []
+    for i in range(segs):
+        j = (i + 1) % segs
+        tris += [(i, j, segs + j), (i, segs + j, segs + i), (2 * segs, j, i), (2 * segs + 1, segs + i, segs + j)]
+    barrel = _expand(P, _proj(S, w, h), np.array(tris, np.int64))
+    rest = mask & ~gray
+    if rest.sum() < 40:
+        return barrel
+    box = fit_box(rest)
+    carriage = box_mesh(mask, [box[:4] + (min(box[4], max(zc, 1.0)),)])
+    return tuple(np.concatenate([barrel[i], carriage[i]]) for i in range(3))
+
+
 def bed_mesh(img, H):
     """Peça de cama: colchão = caixa do tile na altura do tiledata. Do resto da silhueta, o lençol que
     transborda o tile (cinza/branco, sem saturação) é uma aba horizontal na altura do colchão; a madeira
@@ -1436,9 +1553,20 @@ def rail_parts(mask, min_px=8):
     return tuple(np.concatenate(t) for t in tris)
 
 
-def sprite_mesh(img, tx, cat, sub, name='', height=0, surface=False):
-    """-> (motor, (pos, pixel, normal)) em listas de triângulos."""
+def sprite_mesh(img, tx, cat, sub, name='', height=0, surface=False, plane_x=None):
+    """-> (motor, (pos, pixel, normal)) em listas de triângulos. plane_x: peça de vela/guindaste montado
+    em vários tiles, com o eixo (True = x) vindo da disposição das peças no mapa (multi_plane_axes)."""
     mask = img != 0
+    if re.search(MULTI_PLANE_NAMES, name, re.I):
+        # vela, bandeira e guindaste: fatias de 1 tile de uma peça grande e fina; todas no mesmo plano
+        # vertical pelo centro do tile, no eixo da fileira de peças (sem fileira, pela verga)
+        mesh = _plane_mesh(mask, axis_plane(mask, plane_x)) if plane_x is not None else sail_mesh(mask)
+        if mesh is not None:
+            return 'vela', mesh
+    if re.fullmatch(r'\s*cannon\s*', name, re.I):
+        mesh = cannon_mesh(img)                  # cano cilíndrico deitado + reparo em caixa
+        if mesh is not None:
+            return 'canhao', mesh
     arch = archetype(tx, cat, sub)
     rho = tx['default_depth_ratio'].get(f'{cat}/{sub}', tx['category_default_depth_ratio'].get(cat, 0.5))
     floor = ((surface and height == 0 and (cat != 'architecture' or sub == 'floor'))
@@ -1807,6 +1935,7 @@ def build_statics(src, n, W, H, out_map):
     sprites, imgs, meshes = {}, {}, {}
     engines = {}
     fountain = fountain_groups(src, gx, gy, z, sid, snames)
+    plane_axes = multi_plane_axes(gx, gy, sid, snames)
     for s in np.unique(vid).tolist():
         img = src.static_art(s & 0xFFFF)
         if img is None or not img.any():
@@ -1840,7 +1969,7 @@ def build_statics(src, n, W, H, out_map):
         if cat == 'unknown' and sheight[s] <= 1 and floor_iou(mask) >= 0.85:
             cat, sub = 'architecture', 'floor'  # losango de chão sem nome conhecido (placas das virtudes)
         eng, mesh = sprite_mesh(img, tx, cat, sub, snames[s] if s < len(snames) else '', int(sheight[s]),
-                                bool(int(sflags[s]) & SF_SURFACE))
+                                bool(int(sflags[s]) & SF_SURFACE), plane_axes.get(s))
         meshes[s] = mesh
         sprites[s] = (SK_MESH, None)
         engines[eng] = engines.get(eng, 0) + 1
