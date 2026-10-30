@@ -19,7 +19,7 @@ execucao. Versoes que carregam os pesos do Hunyuan: transformers==4.48.3 diffuse
 
 Uso: python -I anims/ai3d.py [--only 2] [--host macmini] [--octree 320] [--steps 30] [--seed 1234] [--skip-gen]
                              [--face-strength 0.8] [--face-prompt ...] [--skip-face] [--no-face]
-                             [--neck 0.035] [--tilt 10] [--twin] [--twin-strength 0.4]
+                             [--neck 0.035] [--tilt 10] [--twin] [--twin-strength 0.4] [--face-tone 0]
 """
 import argparse, os, shlex, subprocess, sys
 import numpy as np
@@ -71,6 +71,8 @@ def main():
                                                        'feito para o ettin)')
     ap.add_argument('--neck', type=float, default=0.035, help='pescoco: levanta as cabecas esta fracao da altura')
     ap.add_argument('--tilt', type=float, default=10, help='pescoco: inclina as cabecas para tras (graus)')
+    ap.add_argument('--face-tone', type=float, default=0.0,
+                    help='rosto com o tom do sprite acima deste raio (px do sprite); 0 = cor do SD')
     ap.add_argument('--twin', action='store_true', help='cabeca da esquerda = copia espelhada da direita, com rosto '
                                                         'variado pelo SD (cicatriz, outros dentes)')
     ap.add_argument('--twin-strength', type=float, default=0.4, help='quanto o SD muda o rosto da copia (0..1)')
@@ -104,7 +106,8 @@ def main():
             run(['scp', '-q', f'{a.host}:{rd}/front_hd.png', hd])
         extra = ['--face-img', hd] if not a.no_face and os.path.exists(hd) else []
         cmd = [sys.executable, '-I', os.path.join(HERE, 'model3d.py'), '--client', a.client, '--only', str(body),
-               '--act', a.act, '--frame', str(a.frame), '--mesh', shape, '--neck', str(a.neck), '--tilt', str(a.tilt)]
+               '--act', a.act, '--frame', str(a.frame), '--mesh', shape, '--neck', str(a.neck), '--tilt', str(a.tilt),
+               '--face-tone', str(a.face_tone)]
         if a.twin and extra:
             # 1a passada so para gerar a imagem com a direita espelhada; o SD varia; a 2a usa a variacao na copia
             tw, tv = os.path.join(d, 'front_twin.png'), os.path.join(d, 'front_twin_hd.png')

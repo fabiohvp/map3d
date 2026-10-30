@@ -286,6 +286,9 @@ def face(out, V, N, v, head, hd=None):
     f = smoothstep(V[:, 2], hi[2] - (head + 0.04) * hgt, hi[2] - head * hgt) * smoothstep(N[:, 1], 0.15, 0.45) * vis
     zc = chin(V)                                                     # o peito sob o queixo nao leva rosto
     f *= smoothstep(V[:, 2], zc - 0.005 * hgt, zc + 0.01 * hgt)
+    # longe do contorno da silhueta: na borda a imagem tem o contorno escuro do sprite (e do SD)
+    dist = ndimage.distance_transform_edt(v['hm'])
+    f *= smoothstep(ndimage.map_coordinates(dist, [w - 0.5, u - 0.5], order=1), 0.5 * UP, 1.5 * UP)
     if hd is None:
         r, amt = SHARP
         img, k = [c * (1 + amt) - ndimage.gaussian_filter(c, r * UP) * amt for c in np.moveaxis(v['col'], -1, 0)], 1
@@ -381,6 +384,8 @@ def main():
     ap.add_argument('--face-img', help='vista 0 redesenhada em alta (RGBA, multiplo do sprite ampliado) para o rosto')
     ap.add_argument('--neck', type=float, default=0.0, help='pescoco: levanta as cabecas esta fracao da altura')
     ap.add_argument('--tilt', type=float, default=0.0, help='pescoco: inclina as cabecas para tras (graus)')
+    ap.add_argument('--face-tone', type=float, default=0.0,
+                    help='rosto com o tom do sprite acima deste raio (px do sprite); 0 = cor do SD')
     ap.add_argument('--twin', action='store_true', help='cabeca da esquerda = copia espelhada da direita (ver twin())')
     ap.add_argument('--twin-out', help='salva a imagem do rosto com a direita espelhada na esquerda (entrada da variacao)')
     ap.add_argument('--twin-face', help='variacao dessa imagem (mesmo tamanho); a metade esquerda vira o rosto da copia')
@@ -403,6 +408,13 @@ def main():
         if a.mesh:
             mesh = external(a.mesh, mesh, a.yaw)
         hd = np.asarray(Image.open(a.face_img).convert('RGB'), np.float32) if a.face_img else None
+        if hd is not None and a.face_tone > 0:
+            # detalhe fino do SD + tom (baixa frequencia) do sprite: some a costura com a cor por vertice
+            v0 = views[(0, False)]
+            sg = a.face_tone * UP * hd.shape[1] / v0['hm'].shape[1]
+            for ch in range(3):
+                o = np.asarray(Image.fromarray(v0['col'][..., ch]).resize(hd.shape[1::-1], Image.BICUBIC), np.float32)
+                hd[..., ch] += ndimage.gaussian_filter(o, sg) - ndimage.gaussian_filter(hd[..., ch], sg)
         rgb, seen, f, uv = colours(mesh, views, a.head, hd)
         # px do modelo (x direita, y para a camera, z cima) -> tiles, three (x, z, y), chao em 0
         V0 = np.asarray(mesh.vertices)
