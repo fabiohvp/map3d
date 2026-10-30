@@ -65,6 +65,7 @@
     <label class="chk" for="opt-statics"><input id="opt-statics" type="checkbox"> Construções</label>
     <label class="chk" for="opt-roofs"><input id="opt-roofs" type="checkbox"> Telhados</label>
     <label class="chk" for="opt-smooth"><input id="opt-smooth" type="checkbox"> Relevo suave</label>
+    <label class="chk" for="opt-lod"><input id="opt-lod" type="checkbox"> LOD ao longe</label>
   </div>
   <div class="mapsel"><span>Statics</span><select id="smode" aria-label="Origem dos statics">
     <option value="data">data · sprites do conversor</option><option value="items">Itens 3D · objetos de items/, arquitetura da malha</option></select></div>
@@ -557,11 +558,10 @@ function loadSprites(buf) {
 }
 // lote de instâncias numa textura RGBA32UI 1024 × linhas: (A, B) de cada instância | (0, caixa da malha) de cada
 // corrida. [0, n0) telhados (6 vértices por instância); [n0, n) malhas já ordenadas por sprite e célula de 8 × 8
-// tiles (bySprite): cada corrida de um mesmo sprite é um desenho indexado (cnt índices a partir do byte off), com as
-// instâncias das células visíveis no frame (cullSet). Segmento: trecho [ss, se) de uma corrida numa célula sc;
-// os da corrida k são [rs[k], rs[k + 1]). cb: caixa de cada célula no mundo (x, z em unidades de z, y; mín e máx).
-// (ox, oy): origem do chunk
-const CELL = 8;
+// tiles (bySprite): cada corrida de um mesmo sprite e nível de LOD é um desenho indexado (cnt/off[k * LODS + nível]:
+// índices a partir do byte off), com as instâncias das células visíveis no frame naquele nível (cullSet). Segmento:
+// trecho [ss, se) de uma corrida numa célula sc; os da corrida k são [rs[k], rs[k + 1]). cb: caixa de cada célula no
+// mundo (x, z em unidades de z, y; mín e máx). (ox, oy): origem do chunk
 function instSet(A, B, n0, ox, oy) {
   const n = A.length, runs = [], ss = [], se = [], sc = [], rs = [], M = statics.mBox;
   const cb = new Float32Array(64 * 6), lo = (v) => (v << 16) >> 16, hi = (v) => v >> 16;
@@ -570,7 +570,7 @@ function instSet(A, B, n0, ox, oy) {
     const s = B[i] & 0xFFFF;
     let j = i + 1;
     while (j < n && (B[j] & 0xFFFF) === s) j++;
-    if (statics.idxCnt[s]) {
+    if (statics.idxCnt[s * LODS]) {
       runs.push(s); rs.push(ss.length);
       // caixa como no S_VS: teto só abaixa (até 0,5 z), tie até +0,6 z, folga de 0,05
       const x0 = lo(M[s * 3]) / 256 - 0.05, x1 = hi(M[s * 3]) / 256 + 0.05, y0 = lo(M[s * 3 + 1]) / 256 - 0.05, y1 = hi(M[s * 3 + 1]) / 256 + 0.05;
@@ -588,16 +588,16 @@ function instSet(A, B, n0, ox, oy) {
   rs.push(ss.length);
   const r = runs.length, data = new Uint32Array(Math.max(1, Math.ceil((n + r) / 1024)) * 4096);
   for (let i = 0; i < n; i++) { data[i * 4] = A[i]; data[i * 4 + 1] = B[i]; }
-  const cnt = new Int32Array(r), off = new Int32Array(r);
+  const cnt = new Int32Array(r * LODS), off = new Int32Array(r * LODS), R = r * LODS;
   for (let k = 0; k < r; k++) {
     const s = runs[k], o = (n + k) * 4;
     data[o + 1] = M[s * 3]; data[o + 2] = M[s * 3 + 1]; data[o + 3] = M[s * 3 + 2];
-    cnt[k] = statics.idxCnt[s]; off[k] = statics.idxOff[s] * 2;
+    for (let l = 0; l < LODS; l++) { cnt[k * LODS + l] = statics.idxCnt[s * LODS + l]; off[k * LODS + l] = statics.idxOff[s * LODS + l] * 2; }
   }
-  return { tex: intTex(1024, data.length / 4096, gl.RGBA32UI, gl.RGBA_INTEGER, gl.UNSIGNED_INT, data), n, n0, cnt, off,
+  return { tex: intTex(1024, data.length / 4096, gl.RGBA32UI, gl.RGBA_INTEGER, gl.UNSIGNED_INT, data), n, n0, r, cnt, off,
     ss: Int32Array.from(ss), se: Int32Array.from(se), sc: Uint8Array.from(sc), rs: Int32Array.from(rs), cb, vis: new Uint8Array(64),
     // desenhos do frame: d, índices, deslocamentos, instâncias, início na lista, corrida; base: (início, corrida) na lista
-    d: 0, dc: new Int32Array(r), doff: new Int32Array(r), dic: new Int32Array(r), dst: new Int32Array(r), drk: new Int32Array(r), dinst: 0, base: 0 };
+    d: 0, dc: new Int32Array(R), doff: new Int32Array(R), dic: new Int32Array(R), dst: new Int32Array(R), drk: new Int32Array(R), dinst: 0, base: 0 };
 }
 // cópias de A e B com as malhas ([n0, n)) ordenadas por sprite e célula (estável); telhados ficam na frente
 function bySprite(A, B, n0) {
@@ -613,27 +613,37 @@ function boxVis(planes, x0, y0, z0, x1, y1, z1) {
   return true;
 }
 // lista do frame (textura uList): para cada lote, os índices das instâncias de malha nas células visíveis, corrida a
-// corrida, e depois (início, corrida) de cada desenho. F: { L, len, planes, zs, fogged, cull }
+// corrida e nível a nível, e depois (início, corrida) de cada desenho.
+// F: { L, len, planes, zs, fogged, cull, eye, ppt: pixels por tile a 1 de distância (0 = sem LOD), err: pixels }
 const flist = { tex: null, rows: 0 };
+// nível de LOD da caixa: o maior cujo desvio fica até F.err pixels na tela, à distância do olho
+function lodOf(F, x0, y0, z0, x1, y1, z1) {
+  if (!F.ppt) return 0;
+  const e = F.eye, d = Math.hypot(Math.max(x0 - e[0], 0, e[0] - x1), Math.max(y0 - e[1], 0, e[1] - y1), Math.max(z0 - e[2], 0, e[2] - z1));
+  let l = 0;
+  while (l + 1 < LODS && LOD_EPS[l + 1] * F.ppt <= F.err * d) l++;
+  return l;
+}
 function cullSet(S, F) {
-  const b = S.cb, v = S.vis, zs = F.zs, r = S.cnt.length;
+  const b = S.cb, v = S.vis, zs = F.zs, r = S.r;
+  // v: 0 = célula fora; 1 + nível de LOD
   for (let c = 0; c < 64; c++) {
-    const o = c * 6;
-    v[c] = b[o] <= b[o + 3] && (!F.cull || (!F.fogged(b[o], b[o + 2], b[o + 3], b[o + 5])
-      && boxVis(F.planes, b[o], b[o + 1] * zs, b[o + 2], b[o + 3], b[o + 4] * zs, b[o + 5]))) ? 1 : 0;
+    const o = c * 6, x0 = b[o], y0 = b[o + 1] * zs, z0 = b[o + 2], x1 = b[o + 3], y1 = b[o + 4] * zs, z1 = b[o + 5];
+    v[c] = x0 <= x1 && (!F.cull || (!F.fogged(x0, z0, x1, z1) && boxVis(F.planes, x0, y0, z0, x1, y1, z1))) ? 1 + lodOf(F, x0, y0, z0, x1, y1, z1) : 0;
   }
-  if (F.L.length < F.len + S.n + 2 * r) {
-    const L = new Uint32Array(Math.ceil((F.len + S.n + 2 * r) * 1.5 / 1024) * 1024);
+  if (F.L.length < F.len + S.n + 2 * r * LODS) {
+    const L = new Uint32Array(Math.ceil((F.len + S.n + 2 * r * LODS) * 1.5 / 1024) * 1024);
     L.set(F.L.subarray(0, F.len)); F.L = L;
   }
   const L = F.L;
   let len = F.len, d = 0, inst = 0;
-  for (let k = 0; k < r; k++) {
+  for (let k = 0; k < r; k++) for (let l = 1; l <= LODS; l++) {
     const st = len;
     for (let s = S.rs[k]; s < S.rs[k + 1]; s++)
-      if (v[S.sc[s]]) for (let i = S.ss[s], e = S.se[s]; i < e; i++) L[len++] = i;
+      if (v[S.sc[s]] === l) for (let i = S.ss[s], e = S.se[s]; i < e; i++) L[len++] = i;
     if (len === st) continue;
-    S.dc[d] = S.cnt[k]; S.doff[d] = S.off[k]; S.dic[d] = len - st; S.dst[d] = st; S.drk[d] = k;
+    const q = k * LODS + l - 1;
+    S.dc[d] = S.cnt[q]; S.doff[d] = S.off[q]; S.dic[d] = len - st; S.dst[d] = st; S.drk[d] = k;
     inst += len - st; d++;
   }
   S.base = len;
@@ -744,6 +754,118 @@ function onSurfaces(A, B, n0, count) {
   }
   return out;
 }
+// LOD ao longe: o nível l simplifica a malha até LOD_EPS[l] tiles de desvio (z métrico: 1 z = 0,1 tile) por colapso
+// de arestas com quádricas (Garland–Heckbert): o vértice u vai para um vizinho v já existente, em ordem de custo, sem
+// virar triângulo. Vértice de costura (mesma posição de outro com normal que não é a oposta: troca de pixel da art
+// numa superfície) não se move; frente e verso de cartão (normais opostas) simplificam cada um por si. Borda aberta
+// só desliza ao longo dela mesma (quádrica do plano da borda): cantos e silhueta ficam. Na frente da malha o pixel
+// da art acompanha a posição: o vértice que fica carrega o pixel certo. Só índices novos, sobre os mesmos vértices.
+// uq: vértices fundidos (4 u32), base/m: os da malha, tri: índices do nível 0 (locais à malha)
+const LOD_EPS = [0, 0.05, 0.12], LODS = LOD_EPS.length, LOD_ERR = 1;
+function simplifyMesh(uq, base, m, tri, eps) {
+  const P = new Float64Array(m * 3), N = new Float64Array(m * 3), lock = new Uint8Array(m), dead = new Uint8Array(m), at = new Map();
+  for (let j = 0; j < m; j++) {
+    const w0 = uq[(base + j) * 4], w1 = uq[(base + j) * 4 + 1], w3 = uq[(base + j) * 4 + 3];
+    P[j * 3] = ((w0 << 16) >> 16) / 256; P[j * 3 + 1] = (w0 >> 16) / 256; P[j * 3 + 2] = ((w1 << 16) >> 16) / 160;
+    let nx = ((w3 << 16) >> 16) / 32767, ny = (w3 >> 16) / 32767;
+    const nz = 1 - Math.abs(nx) - Math.abs(ny);
+    if (nz < 0) [nx, ny] = [(1 - Math.abs(ny)) * Math.sign(nx), (1 - Math.abs(nx)) * Math.sign(ny)];
+    N[j * 3] = nx; N[j * 3 + 1] = ny; N[j * 3 + 2] = nz;
+    const k = w0 * 65536 + (w1 & 0xFFFF);
+    if (!at.has(k)) at.set(k, []);
+    at.get(k).push(j);
+  }
+  for (const g of at.values())
+    for (let i = 0; i < g.length; i++) for (let j = i + 1; j < g.length; j++) {
+      const a = g[i] * 3, b = g[j] * 3, l = Math.hypot(N[a], N[a + 1], N[a + 2]) * Math.hypot(N[b], N[b + 1], N[b + 2]);
+      if (N[a] * N[b] + N[a + 1] * N[b + 1] + N[a + 2] * N[b + 2] > -0.9 * l) lock[g[i]] = lock[g[j]] = 1;
+    }
+  const T = Int32Array.from(tri), nt = T.length / 3, alive = new Uint8Array(nt).fill(1);
+  const Q = new Float64Array(m * 10), adj = Array.from({ length: m }, () => []), edges = new Map();
+  const normal = (a, b, c) => {
+    const ux = P[b * 3] - P[a * 3], uy = P[b * 3 + 1] - P[a * 3 + 1], uz = P[b * 3 + 2] - P[a * 3 + 2];
+    const vx = P[c * 3] - P[a * 3], vy = P[c * 3 + 1] - P[a * 3 + 1], vz = P[c * 3 + 2] - P[a * 3 + 2];
+    return [uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx];
+  };
+  // quádrica do plano (n, d) nos vértices vs
+  const addQ = (vs, nx, ny, nz, px, py, pz) => {
+    const d = -(nx * px + ny * py + nz * pz), q = [nx * nx, nx * ny, nx * nz, nx * d, ny * ny, ny * nz, ny * d, nz * nz, nz * d, d * d];
+    for (const a of vs) for (let i = 0; i < 10; i++) Q[a * 10 + i] += q[i];
+  };
+  for (let f = 0; f < nt; f++)
+    for (let e = 0; e < 3; e++) {
+      const a = T[f * 3 + e], b = T[f * 3 + (e + 1) % 3], k = Math.min(a, b) * m + Math.max(a, b);
+      edges.set(k, (edges.get(k) || 0) + 1);
+      adj[a].push(f);
+    }
+  for (let f = 0; f < nt; f++) {
+    const v3 = [T[f * 3], T[f * 3 + 1], T[f * 3 + 2]], n = normal(...v3), l = Math.hypot(...n);
+    if (l < 1e-12) continue;
+    const nx = n[0] / l, ny = n[1] / l, nz = n[2] / l;
+    addQ(v3, nx, ny, nz, P[v3[0] * 3], P[v3[0] * 3 + 1], P[v3[0] * 3 + 2]);
+    for (let e = 0; e < 3; e++) {   // borda aberta: plano que contém a aresta, perpendicular à face
+      const a = v3[e], b = v3[(e + 1) % 3];
+      if (edges.get(Math.min(a, b) * m + Math.max(a, b)) !== 1) continue;
+      const ex = P[b * 3] - P[a * 3], ey = P[b * 3 + 1] - P[a * 3 + 1], ez = P[b * 3 + 2] - P[a * 3 + 2];
+      const bx = ey * nz - ez * ny, by = ez * nx - ex * nz, bz = ex * ny - ey * nx, bl = Math.hypot(bx, by, bz);
+      if (bl > 1e-12) addQ([a, b], bx / bl, by / bl, bz / bl, P[a * 3], P[a * 3 + 1], P[a * 3 + 2]);
+    }
+  }
+  const cost = (u, v) => {
+    const x = P[v * 3], y = P[v * 3 + 1], z = P[v * 3 + 2], q = (i) => Q[u * 10 + i] + Q[v * 10 + i];
+    return q(0) * x * x + 2 * q(1) * x * y + 2 * q(2) * x * z + 2 * q(3) * x + q(4) * y * y + 2 * q(5) * y * z
+      + 2 * q(6) * y + q(7) * z * z + 2 * q(8) * z + q(9);
+  };
+  // algum triângulo de u que fica vira (ou some) se u for para v
+  const flips = (u, v) => {
+    for (const f of adj[u]) {
+      if (!alive[f]) continue;
+      const a = T[f * 3], b = T[f * 3 + 1], c = T[f * 3 + 2];
+      if (a === v || b === v || c === v) continue;
+      const n0 = normal(a, b, c), n1 = normal(a === u ? v : a, b === u ? v : b, c === u ? v : c);
+      const l0 = Math.hypot(...n0), l1 = Math.hypot(...n1);
+      if (l1 < 1e-9 || n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2] < 0.5 * l0 * l1) return true;
+    }
+    return false;
+  };
+  const eps2 = eps * eps, touched = new Uint8Array(m);
+  for (;;) {
+    const cand = [];
+    for (let u = 0; u < m; u++) {
+      if (dead[u] || lock[u]) continue;
+      const seen = new Set();
+      for (const f of adj[u]) {
+        if (!alive[f]) continue;
+        for (let e = 0; e < 3; e++) {
+          const v = T[f * 3 + e];
+          if (v === u || seen.has(v)) continue;
+          seen.add(v);
+          const c = cost(u, v);
+          if (c <= eps2) cand.push([c, u, v]);
+        }
+      }
+    }
+    cand.sort((a, b) => a[0] - b[0]);
+    touched.fill(0);
+    let done = 0;
+    for (const [, u, v] of cand) {
+      if (touched[u] || touched[v] || flips(u, v)) continue;
+      for (const f of adj[u]) {
+        if (!alive[f]) continue;
+        for (let e = 0; e < 3; e++) touched[T[f * 3 + e]] = 1;
+        if (T[f * 3] === v || T[f * 3 + 1] === v || T[f * 3 + 2] === v) { alive[f] = 0; continue; }
+        for (let e = 0; e < 3; e++) if (T[f * 3 + e] === u) T[f * 3 + e] = v;
+        adj[v].push(f);
+      }
+      for (let i = 0; i < 10; i++) Q[v * 10 + i] += Q[u * 10 + i];
+      dead[u] = 1; done++;
+    }
+    if (!done) break;
+  }
+  const out = [];
+  for (let f = 0; f < nt; f++) if (alive[f]) out.push(T[f * 3], T[f * 3 + 1], T[f * 3 + 2]);
+  return out;
+}
 // MSH1: u32 magic, u32 vértices, u32 linhas | i16[linhas][2048][4] → textura RGBA16I 2048 × linhas
 function loadMeshes(buf) {
   const rows = new DataView(buf).getUint32(8, true);
@@ -752,8 +874,9 @@ function loadMeshes(buf) {
   statics.sprBox = new Float32Array(n * 5);
   // o conversor grava 3 vértices por triângulo; cantos iguais (posição, pixel e normal) viram um vértice só e a
   // malha é desenhada indexada, na mesma ordem de triângulos: o cache de vértices da GPU roda o shader ~1/4 das vezes
-  const uq = new Uint32Array(w.length), idx = new Uint16Array(w.length / 4);
-  statics.idxOff = new Uint32Array(n); statics.idxCnt = new Uint32Array(n); statics.mBox = new Uint32Array(n * 3);
+  // idxOff/idxCnt por sprite e nível de LOD (sprite * LODS + nível)
+  const uq = new Uint32Array(w.length), idx = new Uint16Array(w.length / 4 * LODS);
+  statics.idxOff = new Uint32Array(n * LODS); statics.idxCnt = new Uint32Array(n * LODS); statics.mBox = new Uint32Array(n * 3);
   let H = new Int32Array(8192), nu = 0, ni = 0;
   for (let i = 0; i < n; i++) {
     if ((t[i * 16 + 8] & 255) !== 0) continue;          // telhado: sem malha
@@ -770,8 +893,8 @@ function loadMeshes(buf) {
     while (sz < c * 2) sz <<= 1;
     if (sz > H.length) H = new Int32Array(sz);
     H.fill(0, 0, sz);
-    const base = nu;
-    statics.idxOff[i] = ni; statics.idxCnt[i] = c;
+    const base = nu, i0 = ni;
+    statics.idxOff[i * LODS] = ni; statics.idxCnt[i * LODS] = c;
     for (let k = o; k < o + c; k++) {
       const a = w[k * 4], b = w[k * 4 + 1], d = w[k * 4 + 2], e = w[k * 4 + 3];
       let h = Math.imul(a, 0x9E3779B1) ^ Math.imul(b, 0x85EBCA77) ^ Math.imul(d, 0xC2B2AE3D) ^ Math.imul(e, 0x27D4EB2F);
@@ -784,6 +907,16 @@ function loadMeshes(buf) {
       }
     }
     t[i * 16 + 10] = base & 0xFFFF; t[i * 16 + 11] = base >>> 16;
+    const tri = idx.subarray(i0, i0 + c);
+    for (let l = 1; l < LODS; l++) {
+      const q = simplifyMesh(uq, base, nu - base, tri, LOD_EPS[l]);
+      if (!q.length || q.length > 0.85 * statics.idxCnt[i * LODS + l - 1]) {   // nada (ou pouco) a ganhar: fica o anterior
+        statics.idxOff[i * LODS + l] = statics.idxOff[i * LODS + l - 1]; statics.idxCnt[i * LODS + l] = statics.idxCnt[i * LODS + l - 1];
+        continue;
+      }
+      statics.idxOff[i * LODS + l] = ni; statics.idxCnt[i * LODS + l] = q.length;
+      idx.set(q, ni); ni += q.length;
+    }
   }
   gl.bindVertexArray(svao);
   gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
@@ -998,7 +1131,8 @@ function chunkLod(cx, cy) {
 // fp: primeira pessoa — o olho fica em (x, y) a settings.eye tiles acima do chão, olhando para yaw / look
 const cam = { x: 1495, y: 1629, h: 0, yaw: Math.PI / 4, pitch: 0.75, dist: 70, classic: false, zoom: 1, fp: false, look: -0.1, fov: 1.2 };
 // eye: altura da câmera em primeira pessoa, em tiles (não depende da escala de altura)
-const settings = { zScale: 0.18, radius: 6, statics: true, roofs: true, smooth: true, items: false, itemRadius: 2, eye: 3.5 };
+// lod: malhas de statics simplificadas ao longe (simplifyMesh)
+const settings = { zScale: 0.18, radius: 6, statics: true, roofs: true, smooth: true, lod: true, items: false, itemRadius: 2, eye: 3.5 };
 const keys = new Set();
 
 function setTarget(x, y) {
@@ -1119,7 +1253,7 @@ async function setupMapSelect() {
 function setupUI() {
   bindRange('zs', 'zScale', (v) => v.toFixed(3));
   bindRange('rad', 'radius', (v) => `${v} chunks · ${v * CH * 2} tiles`);
-  for (const k of ['statics', 'roofs', 'smooth']) {
+  for (const k of ['statics', 'roofs', 'smooth', 'lod']) {
     const el = $('opt-' + k);
     el.checked = settings[k];
     el.addEventListener('change', () => { settings[k] = el.checked; });
@@ -1292,7 +1426,9 @@ function frame(now) {
       if (boxVisible(planes, [x0 - 7, Math.min(c.zMin, -128) * settings.zScale, y0 - 7], [x0 + CH + 2, c.sZMax * settings.zScale, y0 + CH + 2])) vis.push(c);
     }
     // malhas: só as células na vista entram na lista do frame (na vista 2D os vértices vão para a art: todas)
-    const F = { L: flist.L || new Uint32Array(1 << 18), len: 0, planes, zs: settings.zScale, fogged, cull: !cam.classic };
+    // LOD: até LOD_ERR pixels de desvio (perspectiva; a vista 2D fica sempre com a malha inteira)
+    const F = { L: flist.L || new Uint32Array(1 << 18), len: 0, planes, zs: settings.zScale, fogged, cull: !cam.classic,
+      eye, ppt: settings.lod && !cam.classic ? h / 2 * proj[5] : 0, err: LOD_ERR };
     const sets = [];
     for (const c of vis) {
       const kept = it3 && items3d.near.has(c);
