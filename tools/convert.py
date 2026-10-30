@@ -2578,7 +2578,7 @@ def main():
     ap.add_argument('--map', type=int, default=0)
     ap.add_argument('--out', default=os.path.normpath(os.path.join(HERE, '..', 'data')))
     ap.add_argument('--only', choices=('all', 'terrain', 'statics'), default='all')
-    ap.add_argument('--smooth', type=float, default=0.3,
+    ap.add_argument('--smooth', type=float, default=0.5,
                     help='fração (0..1) que cada tile de terreno anda até a média dos vizinhos 3x3')
     a = ap.parse_args()
     W, H = MAPS[a.map]
