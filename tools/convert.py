@@ -1649,6 +1649,12 @@ def sprite_mesh(img, tx, cat, sub, name='', height=0, surface=False, plane_x=Non
         return 'planta', plant_mesh(mask, height)
     if cat == 'vegetation' and sub == 'tree':
         return 'arvore', plant_mesh(mask, height, tree=True)
+    if re.search(r'\bleaves\b|\bneedles\b', name, re.I) and mask.shape[0] >= 100:
+        # copa de árvore em sprite separado do tronco: casco, esticado na vertical como o tronco
+        # (z a partir do chão no centro do tile, onde os dois coincidem) para continuar encaixada
+        fill = mask.sum() / max(1, np.prod(np.ptp(np.argwhere(mask), 0) + 1))
+        P, px, n = _hull_fit(mask, min(rho, 0.08) if fill < 0.33 else rho, CARD_CELLS if fill < 0.33 else HULL_CELLS)
+        return 'copa', (P * np.array([1.0, 1.0, TREE_SCALE]), px, n)
     if re.search(LOG_NAMES, name, re.I):
         mesh = log_mesh(mask)
         if mesh is not None:
