@@ -982,7 +982,8 @@ def multi_plane_layout(gx, gy, z, sid, snames, sflags, sheight, art):
     mesmo nome vota no eixo mais comprido da sua caixa; o sprite fica com a maioria. Peça solta não vota.
     recuo k (tiles): com o plano pelo centro do tile, o pé do mastro fica muito acima do convés (as fatias
     são desenhadas nos tiles da frente); (x − k, y − k, z − 11k) cai no mesmo pixel, então o grupo recua
-    até o pixel mais baixo encostar na superfície mais alta do convés em volta."""
+    até o mastro desenhado continuar o poste do convés (k tiles atrás da peça do mastro na diagonal) ou,
+    sem poste, até o pixel mais baixo encostar na superfície mais alta do convés em volta."""
     named = {s for s in np.unique(sid).tolist() if s < len(snames) and re.search(MULTI_PLANE_NAMES, snames[s], re.I)}
     sel = np.isin(sid, list(named))
     inst = list(zip(gx[sel].tolist(), gy[sel].tolist(), z[sel].tolist(), sid[sel].tolist()))
@@ -1029,18 +1030,44 @@ def multi_plane_layout(gx, gy, z, sid, snames, sflags, sheight, art):
     tops = {}
     for x, y, zz, s in zip(gx[surf].tolist(), gy[surf].tolist(), z[surf].tolist(), sid[surf].tolist()):
         tops.setdefault((x, y), []).append(zz + int(sheight[s]))
+    # pé de mastro: poste no convés em que o mastro desenhado na vela continua
+    pole = {s for s in np.unique(sid).tolist() if s < len(snames) and re.search(r'\bpost\b|\bmast\b|\bpole\b', snames[s], re.I)}
+    psel = np.isin(sid, list(pole))
+    posts = {}
+    for x, y, zz, s in zip(gx[psel].tolist(), gy[psel].tolist(), z[psel].tolist(), sid[psel].tolist()):
+        posts.setdefault((x, y), []).append(zz + int(sheight[s]))
     shifts = {}
     for comp in comps:
         mem = [(zz, s) for k in comp for zz, s in cells[k] if s in low]
         if not mem:
             continue
+        if not re.search(r'sails?\b', comp[0][0], re.I):
+            continue                                 # guindaste: o pé já apoia (axis_plane)
         glow, zmin = min(zz + low[s] for zz, s in mem), min(zz for zz, _ in mem)
-        xs, ys = [k[1] for k in comp], [k[2] for k in comp]
-        deck = [t for x in range(min(xs) - 2, max(xs) + 3) for y in range(min(ys) - 2, max(ys) + 3)
-                for t in tops.get((x, y), ()) if t <= zmin + 2]
-        if deck and (glow - max(deck)) / 11 > 0.5:
+        # a peça com altura no tiledata é a do mastro: o poste fica k tiles atrás dela na diagonal do raio
+        masts = [(key[1], key[2], zz, s) for key in comp for zz, s in cells[key] if sheight[s] > 0 and s in low]
+        found = [k for x, y, zz, s in masts for k in range(0, 9)
+                 if any(t <= zz for t in posts.get((x - k, y - k), ()))]
+        # sem poste: o k em que o pé do mastro cai no convés do tile de destino (x − k, y − k)
+        fit = []
+        for x, y, zz, s in masts:
+            for kk in range(0, 9):
+                deck = [t for t in tops.get((x - kk, y - kk), ()) if t <= zz]
+                if deck and abs((zz + low[s] - max(deck)) / 11 - kk) <= 1:
+                    fit.append((zz + low[s] - max(deck)) / 11)
+                    break
+        if found:
+            k = float(min(found))
+        elif fit:
+            k = float(np.median(fit))
+        else:
+            xs, ys = [key[1] for key in comp], [key[2] for key in comp]
+            deck = [t for x in range(min(xs) - 2, max(xs) + 3) for y in range(min(ys) - 2, max(ys) + 3)
+                    for t in tops.get((x, y), ()) if t <= zmin + 2]
+            k = (glow - max(deck)) / 11 if deck else 0.0
+        if k > 0.5:
             for zz, s in mem:
-                shifts.setdefault(s, []).append((glow - max(deck)) / 11)
+                shifts.setdefault(s, []).append(k)
     return axes, {s: float(np.median(v)) for s, v in shifts.items()}
 
 
