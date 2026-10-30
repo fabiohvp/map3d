@@ -70,6 +70,8 @@
     <option value="data">data · sprites do conversor</option><option value="items">Itens 3D · objetos de items/, arquitetura da malha</option></select></div>
   <label for="irad" id="iradl" hidden>Distância dos itens 3D <span id="iradv"></span><input id="irad" type="range" min="1" max="6" step="1"></label>
   <label class="chk" for="opt-classic"><input id="opt-classic" type="checkbox"> Vista 2D (ângulo e escala do cliente)</label>
+  <label class="chk" for="opt-fp"><input id="opt-fp" type="checkbox"> Primeira pessoa</label>
+  <label for="eye" id="eyel" hidden>Altura da câmera <span id="eyev"></span><input id="eye" type="range" min="0.5" max="15" step="0.1"></label>
   <label for="zs">Escala de altura <span id="zsv"></span><input id="zs" type="range" min="0.03" max="0.5" step="0.005"></label>
   <label for="rad">Distância de visão <span id="radv"></span><input id="rad" type="range" min="2" max="14" step="1"></label>
   <form class="goto" id="goto"><input id="gx" inputmode="numeric" placeholder="x" aria-label="x"><input id="gy" inputmode="numeric" placeholder="y" aria-label="y"><button>Ir</button></form>
@@ -77,6 +79,7 @@
     <li>Arrastar: mover</li><li>Botão direito ou Ctrl + arrastar: girar / inclinar</li>
     <li>Roda ou pinça: zoom</li><li>WASD / setas: mover · Q/E: girar</li><li>Clique no minimapa: teleporte</li>
     <li>Vista 2D: zoom 1 = 44 px por tile, como o cliente; não gira</li>
+    <li>Primeira pessoa: arrastar olha · WASD anda, A/D de lado · setas giram e olham · Shift corre · roda: campo de visão</li>
   </ul></details>
 </div>
 
@@ -832,8 +835,10 @@ function chunkLod(cx, cy) {
 
 // ------------------------------------------------------------ câmera e controles
 // classic: vista 2D do cliente (projeção oblíqua, 44 px por tile × zoom); senão perspectiva livre
-const cam = { x: 1495, y: 1629, h: 0, yaw: Math.PI / 4, pitch: 0.75, dist: 70, classic: false, zoom: 1 };
-const settings = { zScale: 0.18, radius: 6, statics: true, roofs: true, smooth: true, items: false, itemRadius: 2 };
+// fp: primeira pessoa — o olho fica em (x, y) a settings.eye tiles acima do chão, olhando para yaw / look
+const cam = { x: 1495, y: 1629, h: 0, yaw: Math.PI / 4, pitch: 0.75, dist: 70, classic: false, zoom: 1, fp: false, look: -0.1, fov: 1.2 };
+// eye: altura da câmera em primeira pessoa, em tiles (não depende da escala de altura)
+const settings = { zScale: 0.18, radius: 6, statics: true, roofs: true, smooth: true, items: false, itemRadius: 2, eye: 3.5 };
 const keys = new Set();
 
 function setTarget(x, y) {
@@ -867,6 +872,7 @@ canvas.addEventListener('pointermove', (e) => {
   const dx = e.clientX - p.x, dy = e.clientY - p.y;
   if (pointers.size === 1) {
     if (p.rotate && cam.classic) { /* vista 2D tem ângulo fixo */ }
+    else if (cam.fp) { cam.yaw -= dx * 0.004; cam.look = Math.max(-1.45, Math.min(1.45, cam.look - dy * 0.004)); }
     else if (p.rotate) { cam.yaw -= dx * 0.005; cam.pitch = Math.max(0.15, Math.min(1.5, cam.pitch + dy * 0.004)); }
     else pan(dx, dy);
   } else if (pointers.size === 2) {
@@ -875,7 +881,7 @@ canvas.addEventListener('pointermove', (e) => {
     p.x = e.clientX; p.y = e.clientY;
     const after = { d: Math.hypot(a.x - b.x, a.y - b.y), ang: Math.atan2(b.y - a.y, b.x - a.x) };
     if (before.d > 0 && after.d > 0) zoomBy(before.d / after.d);
-    if (!cam.classic) cam.yaw -= after.ang - before.ang;
+    if (!cam.classic && !cam.fp) cam.yaw -= after.ang - before.ang;
     return;
   }
   p.x = e.clientX; p.y = e.clientY;
@@ -888,6 +894,7 @@ canvas.addEventListener('wheel', (e) => {
 // f > 1 afasta
 function zoomBy(f) {
   if (cam.classic) cam.zoom = Math.max(0.1, Math.min(8, cam.zoom / f));
+  else if (cam.fp) cam.fov = Math.max(0.3, Math.min(1.8, cam.fov * f));
   else cam.dist = Math.max(5, Math.min(700, cam.dist * f));
 }
 addEventListener('keydown', (e) => { if (e.target.tagName !== 'INPUT') keys.add(e.key.toLowerCase()); });
@@ -903,6 +910,17 @@ function applyKeys(dt) {
   const boost = keys.has('shift') ? 3 : 1;
   if (cam.classic) {
     if (fx || fy) pan(-fx * 600 * dt * boost, -fy * 600 * dt * boost);
+    return;
+  }
+  if (cam.fp) {   // frente = (−sin, −cos), direita = (cos, −sin) em (x, y) do mapa; ~8 tiles/s
+    // WASD anda; setas giram (esquerda/direita) e olham para cima/baixo
+    fx = keys.has('d') - keys.has('a'); fy = keys.has('s') - keys.has('w');
+    cam.yaw += (keys.has('arrowleft') - keys.has('arrowright')) * dt * 1.5;
+    cam.look = Math.max(-1.45, Math.min(1.45, cam.look + (keys.has('arrowup') - keys.has('arrowdown')) * dt * 1.2));
+    const sp = 8 * dt * boost, sx = Math.sin(cam.yaw), cx = Math.cos(cam.yaw);
+    if (fx || fy) setTarget(cam.x + (fx * cx + fy * sx) * sp, cam.y + (-fx * sx + fy * cx) * sp);
+    if (keys.has('q')) cam.yaw += dt * 1.5;
+    if (keys.has('e')) cam.yaw -= dt * 1.5;
     return;
   }
   const sp = cam.dist * 1.2 * dt * boost;
@@ -947,6 +965,7 @@ function setupUI() {
     el.addEventListener('change', () => { settings[k] = el.checked; });
   }
   $('opt-statics').disabled = !statics.ready;
+  bindRange('eye', 'eye', (v) => `${v.toFixed(1)} tiles`);
   bindRange('irad', 'itemRadius', (v) => `${v} chunks · ${(v * 2 + 1) * CH} tiles`);
   const sm = $('smode'), q = new URLSearchParams(location.search);
   sm.value = q.get('statics') === 'items' ? 'items' : 'data';
@@ -959,8 +978,12 @@ function setupUI() {
     setStaticsMode(sm.value);
   });
   if (statics.ready) setStaticsMode(sm.value);
+  // vista 2D e primeira pessoa se excluem
   $('opt-classic').checked = cam.classic;
-  $('opt-classic').addEventListener('change', (e) => { cam.classic = e.target.checked; });
+  $('opt-fp').checked = cam.fp;
+  $('eyel').hidden = !cam.fp;
+  $('opt-classic').addEventListener('change', (e) => { cam.classic = e.target.checked; if (cam.classic) $('opt-fp').checked = cam.fp = false; $('eyel').hidden = !cam.fp; });
+  $('opt-fp').addEventListener('change', (e) => { cam.fp = e.target.checked; if (cam.fp) $('opt-classic').checked = cam.classic = false; $('eyel').hidden = !cam.fp; });
   $('goto').addEventListener('submit', (e) => {
     e.preventDefault();
     const x = parseInt($('gx').value, 10), y = parseInt($('gy').value, 10);
@@ -1022,6 +1045,13 @@ function frame(now) {
     eye = [target[0] + 1000 / l, target[1] + 1000 * q / l, target[2] + 1000 / l];
     vp = proj = mat4.classic(target, settings.zScale, cam.zoom * dpr, w, h, settings.radius * CH * 3 + 400);
     view = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+  } else if (cam.fp) {
+    eye = [cam.x, cam.h + settings.eye, cam.y];
+    const cl = Math.cos(cam.look);
+    const at = [eye[0] - cl * Math.sin(cam.yaw), eye[1] + Math.sin(cam.look), eye[2] - cl * Math.cos(cam.yaw)];
+    proj = mat4.perspective(cam.fov, w / h, 0.05, settings.radius * CH * 1.6);
+    view = mat4.lookAt(eye, at, [0, 1, 0]);
+    vp = mat4.mul(proj, view);
   } else {
     const cp = Math.cos(cam.pitch);
     eye = [target[0] + cam.dist * cp * Math.sin(cam.yaw), target[1] + cam.dist * Math.sin(cam.pitch), target[2] + cam.dist * cp * Math.cos(cam.yaw)];
@@ -1128,7 +1158,7 @@ function frame(now) {
   }
   if (it3) {
     items3d.layer.render({ proj, view, w, h, zScale: settings.zScale, sunDir: SUN, fogColor: FOG,
-      fogNear: cam.classic ? 0 : cam.dist + fogEnd * 0.7, fogFar: cam.classic ? 0 : cam.dist + fogEnd });
+      fogNear: cam.classic ? 0 : (cam.fp ? 0 : cam.dist) + fogEnd * 0.7, fogFar: cam.classic ? 0 : (cam.fp ? 0 : cam.dist) + fogEnd });
     inst += items3d.layer.stats().inst;
   }
 
@@ -1175,6 +1205,7 @@ function frame(now) {
   if (q.has('dist')) cam.dist = +q.get('dist');
   if (q.has('pitch')) cam.pitch = +q.get('pitch');
   if (q.get('view') === '2d') cam.classic = true;
+  if (q.get('view') === 'fp') cam.fp = true;
   if (q.has('zoom')) cam.zoom = +q.get('zoom');
   addEventListener('hashchange', () => { const h = /^#(\d+),(\d+)$/.exec(location.hash); if (h) setTarget(+h[1], +h[2]); });
   setupUI();
