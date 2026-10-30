@@ -2469,9 +2469,26 @@ class EnhancedSource:
 
 # ---------------------------------------------------------------- terreno
 
-def build_terrain(src, n, W, H, out_map):
+def smooth_heights(z, keep, k):
+    """Puxa cada tile a fração k do caminho até a média dos vizinhos 3x3 (ele incluso): picos e
+    serrilhados de montanha baixam sem achatar o relevo. Tiles em keep (void) não mudam nem entram
+    na média dos vizinhos."""
+    if k <= 0:
+        return z
+    v = (~keep).astype(np.float32)
+    zf = z.astype(np.float32) * v
+    sp, cp = np.pad(zf, 1), np.pad(v, 1)
+    s = sum(sp[dy:dy + z.shape[0], dx:dx + z.shape[1]] for dy in range(3) for dx in range(3))
+    c = sum(cp[dy:dy + z.shape[0], dx:dx + z.shape[1]] for dy in range(3) for dx in range(3))
+    mean = s / np.maximum(c, 1)
+    out = np.rint(z + k * (mean - z)).clip(-128, 127).astype(z.dtype)
+    return np.where(keep, z, out)
+
+
+def build_terrain(src, n, W, H, out_map, smooth=0.0):
     print('lendo mapa...')
     tid, z = src.read_map(n, W, H)
+    z = smooth_heights(z, np.isin(tid, list(VOID_LAND)), smooth)
     os.makedirs(os.path.join(out_map, 'terrain'), exist_ok=True)
     land_to_mat, mats, l64, l128 = src.terrain_materials(tid)
     print(f'  materiais {len(mats)}, land64 {len(l64)} camadas, land128 {len(l128)} camadas')
@@ -2561,6 +2578,8 @@ def main():
     ap.add_argument('--map', type=int, default=0)
     ap.add_argument('--out', default=os.path.normpath(os.path.join(HERE, '..', 'data')))
     ap.add_argument('--only', choices=('all', 'terrain', 'statics'), default='all')
+    ap.add_argument('--smooth', type=float, default=0.3,
+                    help='fração (0..1) que cada tile de terreno anda até a média dos vizinhos 3x3')
     a = ap.parse_args()
     W, H = MAPS[a.map]
     out_map = os.path.join(a.out, f'map{a.map}')
@@ -2574,7 +2593,7 @@ def main():
     mpath = os.path.join(out_map, 'manifest.json')
     manifest = json.load(open(mpath)) if os.path.exists(mpath) else {}
     if a.only in ('all', 'terrain'):
-        manifest.update(build_terrain(src, a.map, W, H, out_map))
+        manifest.update(build_terrain(src, a.map, W, H, out_map, a.smooth))
     elif 'chunks' not in manifest:
         sys.exit('rode o terreno primeiro (--only terrain ou all)')
     if a.only in ('all', 'statics'):
