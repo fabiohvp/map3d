@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Animações 2D e 3D — Britannia</title>
+<style>
+  :root { --bg:#14181a; --card:#1c2225; --fg:#e6ece9; --muted:#8fa19a; --accent:#6cc4a8; --line:rgba(255,255,255,.09);
+          --font:"Segoe UI",system-ui,sans-serif; --mono:"Cascadia Code",Consolas,monospace; }
+  * { box-sizing:border-box; }
+  html, body { height:100%; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 var(--font); display:flex; flex-direction:column; }
+  header { padding:14px 20px 8px; display:flex; gap:16px; align-items:baseline; flex-wrap:wrap; }
+  h1 { margin:0; font-size:19px; }
+  header p { margin:0; color:var(--muted); flex:1; min-width:260px; }
+  header a { color:var(--accent); }
+  .wrap { flex:1; min-height:0; display:grid; grid-template-columns:300px 1fr; gap:12px; padding:0 20px 16px; }
+  aside { background:var(--card); border:1px solid var(--line); border-radius:12px; display:flex; flex-direction:column; min-height:0; }
+  aside .f { padding:10px; display:flex; gap:6px; flex-wrap:wrap; border-bottom:1px solid var(--line); }
+  input[type=search], select { background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:6px 8px; font:13px var(--font); }
+  aside input[type=search] { flex:1; min-width:0; }
+  #list { overflow:auto; flex:1; padding:6px; display:grid; grid-template-columns:repeat(auto-fill,minmax(64px,1fr)); gap:4px; align-content:start; }
+  .b { border:1px solid transparent; border-radius:8px; cursor:pointer; padding:2px 0 3px; text-align:center; background:rgba(255,255,255,.02); }
+  .b:hover { border-color:var(--line); background:rgba(255,255,255,.05); }
+  .b.on { border-color:var(--accent); background:rgba(108,196,168,.12); }
+  .b i { display:block; width:64px; height:64px; margin:auto; background-image:url(data/thumbs.png); image-rendering:auto; }
+  .b span { font:10px var(--mono); color:var(--muted); }
+  #count { color:var(--muted); font-size:12px; padding:4px 10px 8px; }
+  section.main { display:flex; flex-direction:column; min-height:0; gap:10px; }
+  .bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:8px 10px; }
+  .bar h2 { margin:0 8px 0 2px; font-size:15px; }
+  .bar .tag { font-size:11px; font-weight:600; padding:1px 8px; border-radius:99px; background:rgba(108,196,168,.15); color:var(--accent); }
+  .bar button { background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:5px 9px; cursor:pointer; font:13px var(--font); min-width:34px; }
+  .bar button.on { background:var(--accent); color:#0d1714; border-color:var(--accent); font-weight:600; }
+  .bar label { display:flex; gap:5px; align-items:center; color:var(--muted); font-size:13px; }
+  .bar .sp { flex:1; }
+  .dirs { display:grid; grid-template-columns:repeat(3,30px); gap:2px; }
+  .dirs button { min-width:0; padding:2px 0; font-size:12px; }
+  .panes { flex:1; min-height:0; display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .pane { background:var(--card); border:1px solid var(--line); border-radius:12px; position:relative; overflow:hidden; min-height:300px; }
+  .pane .lbl { position:absolute; left:10px; top:8px; font-size:11px; color:var(--muted); letter-spacing:.05em; text-transform:uppercase; z-index:2; pointer-events:none; }
+  .pane .tools { position:absolute; right:8px; top:6px; z-index:2; display:flex; gap:6px; }
+  .pane .tools button, .pane .tools select { background:rgba(20,24,26,.85); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:3px 8px; font:12px var(--font); cursor:pointer; }
+  .pane .tools button.on { background:var(--accent); color:#0d1714; }
+  #c2d { position:absolute; inset:0; width:100%; height:100%; image-rendering:pixelated;
+         background:#3a4442 repeating-conic-gradient(#333c3a 0 25%, #3a4442 0 50%) 0 0/24px 24px; }
+  #c3d { position:absolute; inset:0; width:100%; height:100%; cursor:grab; touch-action:none; }
+  #c3d:active { cursor:grabbing; }
+  .info { position:absolute; left:10px; bottom:8px; font:11px var(--mono); color:var(--muted); z-index:2; pointer-events:none; }
+  #msg { padding:40px 24px; max-width:720px; margin:auto; color:#e6aa5a; display:none; }
+  @media (max-width:900px) {
+    .wrap { grid-template-columns:1fr; } aside { max-height:240px; } .panes { grid-template-columns:1fr; } .pane { min-height:320px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Animações 2D → 3D</h1>
+  <p>Corpos dos anim*.mul (com Bodyconv.def). O 3D é um casco visual: as 5 direções gravadas são o mesmo modelo girado
+    45° em câmera ortográfica (elevação atan ½ ≈ 26,6°), então cada quadro vira voxels que caem dentro das 5 silhuetas,
+    pintados pela vista que os vê mais de frente. · <a href="../index.html">← mapa</a></p>
+</header>
+<div id="msg"></div>
+<div class="wrap" id="app">
+  <aside>
+    <div class="f">
+      <input id="q" type="search" placeholder="id (ex.: 400 ou 0x190)">
+      <select id="ftype"><option value="">todos os tipos</option></select>
+    </div>
+    <div id="list"></div>
+    <div id="count"></div>
+  </aside>
+  <section class="main">
+    <div class="bar">
+      <h2 id="title">—</h2><span class="tag" id="ttype"></span>
+      <select id="act" title="ação"></select>
+      <div class="dirs" id="dirs" title="direção"></div>
+      <button id="play" title="tocar/pausar (espaço)">❚❚</button>
+      <button id="step" title="próximo quadro (→)">⏭</button>
+      <label>quadro <input id="frame" type="range" min="0" max="0" value="0" style="width:110px"><span id="flbl" style="font:12px var(--mono)">0/0</span></label>
+      <label>fps <input id="fps" type="range" min="2" max="24" value="10" style="width:80px"></label>
+      <span class="sp"></span>
+    </div>
+    <div class="panes">
+      <div class="pane">
+        <span class="lbl">2D original</span>
+        <div class="tools"><select id="zoom2d" title="zoom"><option value="0">ajustar</option><option>1</option><option>2</option><option>3</option><option>4</option></select></div>
+        <canvas id="c2d"></canvas>
+        <span class="info" id="i2d"></span>
+      </div>
+      <div class="pane">
+        <span class="lbl" id="lbl3d">3D gerado (voxels)</span>
+        <div class="tools">
+          <button id="cam" title="câmera ortográfica na mesma vista do sprite">câmera UO</button>
+          <button id="spin" title="girar sozinho">girar</button>
+          <button id="lit" class="on" title="luz direcional sobre as cores do sprite">luz</button>
+        </div>
+        <canvas id="c3d"></canvas>
+        <span class="info" id="i3d"></span>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }
+</script>
+<script type="module" src="app.js"></script>
+<script>
+  if (location.protocol === 'file:') {
+    const m = document.getElementById('msg');
+    m.style.display = 'block';
+    m.innerHTML = 'Abra por um servidor HTTP (o navegador bloqueia fetch em file://): na pasta map3d rode <code>npm start</code> e acesse <code>/anims/</code>.';
+    document.getElementById('app').style.display = 'none';
+  }
+</script>
+</body>
+</html>
