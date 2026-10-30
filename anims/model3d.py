@@ -265,11 +265,12 @@ def smoothstep(x, a, b):
     return t * t * (3 - 2 * t)
 
 
-def face(out, V, N, v, head, hd=None):
+def face(out, V, N, v, head, hd=None, lo_n=0.15):
     """rosto: cor so da vista 0, projetada na horizontal (elevacao 0) e encaixada pela caixa da silhueta. A forma da IA
     leu a imagem de frente como vista horizontal, entao olhos, nariz e boca esculpidos caem onde a imagem os mostra
     nessa projecao, e nao na de 26,6 graus do UO. hd: a vista 0 redesenhada em alta (ai3d_face_remote.py), mesma
-    moldura que v ampliada; dispensa a mascara de nitidez.
+    moldura que v ampliada; dispensa a mascara de nitidez. lo_n: normal.y (para a frente) onde o rosto comeca; menor
+    pega mais da testa e das laterais (que inclinam), com a imagem de frente mais esticada.
     -> (cor, f = peso do rosto por vertice, uv em hd (x, y em px) ou None)"""
     rows, cols = np.nonzero(v['hm'])
     lo, hi = V.min(0), V.max(0)
@@ -281,14 +282,16 @@ def face(out, V, N, v, head, hd=None):
     zy = np.clip(np.floor(w / zs).astype(int), 0, H - 1)
     zb = np.full((H, W), -np.inf, np.float32)
     np.maximum.at(zb, (zy, zx), V[:, 1])
-    vis = V[:, 1] >= ndimage.maximum_filter(zb, 3)[zy, zx] - 1.5
+    # tolerancia cresce com a inclinacao: na testa a profundidade muda muito dentro da vizinhanca 3x3 do mapa
+    ny = np.clip(N[:, 1], 0.2, 1)
+    vis = V[:, 1] >= ndimage.maximum_filter(zb, 3)[zy, zx] - 1.5 - 1.5 * np.sqrt(1 - ny ** 2) / ny
     hgt = hi[2] - lo[2]
-    f = smoothstep(V[:, 2], hi[2] - (head + 0.04) * hgt, hi[2] - head * hgt) * smoothstep(N[:, 1], 0.15, 0.45) * vis
+    f = smoothstep(V[:, 2], hi[2] - (head + 0.04) * hgt, hi[2] - head * hgt) * smoothstep(N[:, 1], lo_n, lo_n + 0.3) * vis
     zc = chin(V)                                                     # o peito sob o queixo nao leva rosto
     f *= smoothstep(V[:, 2], zc - 0.005 * hgt, zc + 0.01 * hgt)
     # longe do contorno da silhueta: na borda a imagem tem o contorno escuro do sprite (e do SD)
     dist = ndimage.distance_transform_edt(v['hm'])
-    f *= smoothstep(ndimage.map_coordinates(dist, [w - 0.5, u - 0.5], order=1), 0.5 * UP, 1.5 * UP)
+    f *= smoothstep(ndimage.map_coordinates(dist, [w - 0.5, u - 0.5], order=1), 0.3 * UP, 1.0 * UP)
     if hd is None:
         r, amt = SHARP
         img, k = [c * (1 + amt) - ndimage.gaussian_filter(c, r * UP) * amt for c in np.moveaxis(v['col'], -1, 0)], 1
@@ -298,7 +301,7 @@ def face(out, V, N, v, head, hd=None):
     return out * (1 - f[:, None]) + col * f[:, None], f, (np.stack([u * k, w * k], 1) if hd is not None else None)
 
 
-def colours(mesh, views, head=0.0, hd=None):
+def colours(mesh, views, head=0.0, hd=None, lo_n=0.15):
     V = np.asarray(mesh.vertices, np.float32)
     N = np.asarray(mesh.vertex_normals, np.float32)
     th = math.radians(THETA)
@@ -342,7 +345,7 @@ def colours(mesh, views, head=0.0, hd=None):
         out[unk] = (A @ out)[unk] / np.maximum(deg[unk, None], 1)
     f = uv = None
     if head > 0:
-        out, f, uv = face(out, V, N, views[(0, False)], head, hd)
+        out, f, uv = face(out, V, N, views[(0, False)], head, hd, lo_n)
     return np.clip(out, 0, 255).astype(np.uint8), known.mean(), f, uv
 
 
@@ -386,6 +389,9 @@ def main():
     ap.add_argument('--tilt', type=float, default=0.0, help='pescoco: inclina as cabecas para tras (graus)')
     ap.add_argument('--face-tone', type=float, default=0.0,
                     help='rosto com o tom do sprite acima deste raio (px do sprite); 0 = cor do SD')
+    ap.add_argument('--face-normal', type=float, default=0.15,
+                    help='normal.y onde o rosto comeca (menor = testa e laterais tambem com a imagem de frente)')
+    ap.add_argument('--face-flat', type=int, default=0, help='alisa o relevo do rosto (iteracoes de Taubin; 0 = nao)')
     ap.add_argument('--twin', action='store_true', help='cabeca da esquerda = copia espelhada da direita (ver twin())')
     ap.add_argument('--twin-out', help='salva a imagem do rosto com a direita espelhada na esquerda (entrada da variacao)')
     ap.add_argument('--twin-face', help='variacao dessa imagem (mesmo tamanho); a metade esquerda vira o rosto da copia')
@@ -415,9 +421,15 @@ def main():
             for ch in range(3):
                 o = np.asarray(Image.fromarray(v0['col'][..., ch]).resize(hd.shape[1::-1], Image.BICUBIC), np.float32)
                 hd[..., ch] += ndimage.gaussian_filter(o, sg) - ndimage.gaussian_filter(hd[..., ch], sg)
-        rgb, seen, f, uv = colours(mesh, views, a.head, hd)
+        rgb, seen, f, uv = colours(mesh, views, a.head, hd, a.face_normal)
         # px do modelo (x direita, y para a camera, z cima) -> tiles, three (x, z, y), chao em 0
         V0 = np.asarray(mesh.vertices)
+        if a.face_flat and f is not None:
+            # relevo do rosto alisado (Taubin, peso f): a textura ja traz olhos e sobrancelhas pintados com sombra, e
+            # orbitas esculpidas fora do lugar deles viram um segundo par de olhos sob a luz
+            sm = mesh.copy()
+            trimesh.smoothing.filter_taubin(sm, lamb=0.5, nu=-0.53, iterations=a.face_flat)
+            V0 = V0 + (np.asarray(sm.vertices) - V0) * f[:, None]
         P, T = (neck(V0, a.neck, a.tilt) if a.neck or a.tilt else V0), np.asarray(mesh.faces)
         if a.twin:
             P, T, rgb, f, uv, mu = twin(V0, P, T, rgb, f if f is not None else np.zeros(len(V0)), uv)
