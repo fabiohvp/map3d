@@ -344,11 +344,26 @@ function loadMaterials(buf) {
 // caixa medida da silhueta, L de paredes de canto, casco inflado da silhueta, slab deitado e casco fino)
 // e grava em cada vértice o pixel da art que ele cobre na câmera do UO. Da vista original a imagem é a
 // art; de outros ângulos o objeto tem volume. Telhados continuam como plano inclinado pelos vizinhos.
-// Malhas: vertex pulling de meshes.bin; cada lote desenha N vértices por instância e a malha usa os seus.
+// Malhas: vertex pulling de meshes.bin, desenhadas indexadas (vértices repetidos fundidos na carga): as instâncias
+// de cada chunk ficam ordenadas por sprite e cada corrida de um mesmo sprite é um desenho (multi-draw por chunk).
+// As instâncias vêm de uma textura por lote (instSet), indexada pela corrida (DRAW_ID) e por gl_InstanceID.
+// Instância de malha cuja caixa fica fora da vista, ou toda além do fim da névoa, sai inteira no começo do shader.
+const MD = gl.getExtension('WEBGL_multi_draw');
 const S_VS = `#version 300 es
+${MD ? '#extension GL_ANGLE_multi_draw : require\n#define DRAW_ID gl_DrawID' : 'uniform int uDrawId;\n#define DRAW_ID uDrawId'}
 precision highp float; precision highp int;
-layout(location = 0) in uint aA;   // x:6 y:6 z+128:8 tie:4 partialHue:1 | malha: teto:6 (26–31) · telhado: inclinação:7 (25–31)
-layout(location = 1) in uint aB;   // sprite:16 hue:16
+// A: x:6 y:6 z+128:8 tie:4 partialHue:1 | malha: teto:6 (26–31) · telhado: inclinação:7 (25–31) · B: sprite:16 hue:16
+// lote: texel i < uN = (A, B) da instância i; texel uN + k = corrida k: primeira instância e caixa da malha
+// (x0 | x1 << 16 em 1/256 tile, idem y, z0 | z1 << 16 em 1/16 z)
+uniform highp usampler2D uInst;
+uniform int uN;
+// por frame (cullSet): índices no lote das instâncias de malha visíveis | por desenho: início na lista e corrida
+uniform highp usampler2D uList;
+uniform int uDrawBase;
+uniform bool uCull;                // descarte por instância (não na vista 2D, onde os vértices vão para a art)
+uniform vec4 uPlanes[6];
+uniform float uFogCut;             // distância no plano a partir da qual tudo é névoa (enorme = não corta)
+uniform vec2 uCenter;
 uniform highp usampler2D uSpr;
 uniform highp isampler2D uMesh;
 uniform mat4 uVP;
@@ -368,15 +383,37 @@ const ivec2 Q[6] = ivec2[6](ivec2(0,0), ivec2(1,0), ivec2(0,1), ivec2(1,0), ivec
 const vec4 OUT = vec4(2.0, 2.0, 2.0, 1.0);
 float P(uint v) { return float(int(v << 16u) >> 16) / 64.0; }
 vec2 proj(vec3 m, float w, float h) { return vec2(22.0 * (m.x - m.y) + w * 0.5, 22.0 * (m.x + m.y) - 4.0 * m.z + h - 44.0); }
+uvec4 I(int i) { return texelFetch(uInst, ivec2(i & 1023, i >> 10), 0); }
+int L(int i) { return int(texelFetch(uList, ivec2(i & 1023, i >> 10), 0).r); }
+vec2 lohi(uint v) { return vec2(float(int(v << 16u) >> 16), float(int(v) >> 16)); }
 void main() {
+  uvec4 run = uvec4(0u);
+  int ii = gl_InstanceID;
+  if (uKind != 0) {
+    int dk = uDrawBase + 2 * DRAW_ID;
+    run = I(uN + L(dk + 1));
+    ii = L(L(dk) + gl_InstanceID);
+  }
+  uvec2 ab = I(ii).xy;
+  uint aA = ab.x, aB = ab.y;
   float cz = float(aA >> 26);
   if (uKind != 0 && uRoofs == 0 && ((aA >> 25) & 1u) != 0u) { gl_Position = OUT; return; }   // sob telhado/andar
+  vec3 tile = vec3(float(aA & 63u), float((aA >> 6) & 63u), float(int((aA >> 12) & 255u) - 128));
+  if (uKind != 0 && uCull) {
+    // caixa da malha no mundo, com o teto (só abaixa, até 0,5 z) e o tie (até +0,6 z) e folga de 0,05
+    vec2 o = uOrigin + tile.xy, bx = lohi(run.y) / 256.0, by = lohi(run.z) / 256.0, bz = lohi(run.w) / 16.0;
+    vec3 mn = vec3(o.x + bx.x, (tile.z + min(bz.x, 0.0)) * uZS, o.y + by.x) - 0.05;
+    vec3 mx = vec3(o.x + bx.y, (tile.z + bz.y + 0.6) * uZS, o.y + by.y) + 0.05;
+    vec2 d = max(max(mn.xz - uCenter, uCenter - mx.xz), 0.0);
+    bool out_ = dot(d, d) >= uFogCut * uFogCut;
+    for (int i = 0; i < 6; i++) out_ = out_ || dot(uPlanes[i].xyz, mix(mn, mx, step(0.0, uPlanes[i].xyz))) + uPlanes[i].w < 0.0;
+    if (out_) { gl_Position = OUT; return; }
+  }
   int s = int(aB & 0xFFFFu);
   ivec2 b = ivec2((s & 255) * 4, s >> 8);
   uvec4 t0 = texelFetch(uSpr, b, 0), t1 = texelFetch(uSpr, b + ivec2(1, 0), 0);
   uvec4 t2 = texelFetch(uSpr, b + ivec2(2, 0), 0), t3 = texelFetch(uSpr, b + ivec2(3, 0), 0);
   float w = float(t1.z), h = float(t1.w);
-  vec3 tile = vec3(float(aA & 63u), float((aA >> 6) & 63u), float(int((aA >> 12) & 255u) - 128));
   float tie = float((aA >> 20) & 15u);
   vFlags = (aA >> 24) & 1u;
   vG = vec2(-1.0);
@@ -405,8 +442,7 @@ void main() {
     L -= vec3(k, k, 11.0 * k);
     L.z += tie * 0.08;
     vN = vec3(0.0);
-  } else {                     // malha: 2 texels por vértice (posição, pixel + normal octaédrica)
-    if (gl_VertexID >= int(t3.x)) { gl_Position = OUT; return; }
+  } else {                     // malha: 2 texels por vértice (posição, pixel + normal octaédrica); gl_VertexID = índice
     int vi = (int(t2.z) | (int(t2.w) << 16)) + gl_VertexID;
     ivec2 at = ivec2((vi & 1023) * 2, vi >> 10);
     ivec4 m0 = texelFetch(uMesh, at, 0), m1 = texelFetch(uMesh, at + ivec2(1, 0), 0);
@@ -490,16 +526,13 @@ gl.attachShader(sprog, compile(gl.FRAGMENT_SHADER, S_FS));
 gl.linkProgram(sprog);
 if (!gl.getProgramParameter(sprog, gl.LINK_STATUS)) fail('<pre>' + gl.getProgramInfoLog(sprog) + '</pre>');
 const SU = {};
-for (const n of ['uSpr', 'uMesh', 'uVP', 'uOrigin', 'uZS', 'uKind', 'uRoofs', 'uAtlas', 'uHues', 'uSun', 'uFog', 'uEye', 'uFogRange', 'uCenter', 'uAtlasSize', 'uFlat'])
+for (const n of ['uInst', 'uN', 'uList', 'uDrawBase', 'uDrawId', 'uCull', 'uPlanes', 'uFogCut', 'uSpr', 'uMesh', 'uVP', 'uOrigin', 'uZS', 'uKind', 'uRoofs', 'uAtlas', 'uHues', 'uSun', 'uFog', 'uEye', 'uFogRange', 'uCenter', 'uAtlasSize', 'uFlat'])
   SU[n] = gl.getUniformLocation(sprog, n);
 
-const svao = gl.createVertexArray();
-gl.bindVertexArray(svao);
-for (const i of [0, 1]) { gl.enableVertexAttribArray(i); gl.vertexAttribDivisor(i, 1); }
-gl.bindVertexArray(null);
-// vértices por instância de cada lote (manifest.meshClasses): 0 = telhado (6), k = malhas de até N vértices
-let kindVerts = [6];
-const statics = { ready: false, sprTex: null, meshTex: null, atlas: null, atlasSize: 4096, hueTex: null, exists: null, sprG: null };
+const svao = gl.createVertexArray(); // sem atributos; guarda o buffer de índices das malhas (loadMeshes)
+// idxOff/idxCnt: primeiro índice e número de índices da malha de cada sprite no buffer de índices;
+// mBox: caixa crua da malha (3 u32 por sprite, como na corrida do S_VS)
+const statics = { ready: false, sprTex: null, meshTex: null, atlas: null, atlasSize: 4096, hueTex: null, exists: null, sprG: null, idxOff: null, idxCnt: null, mBox: null };
 // Itens 3D: statics a até settings.itemRadius chunks viram os modelos de items/ (three.js no mesmo contexto);
 // além disso, e os telhados, seguem com as malhas do conversor
 const items3d = { layer: null, loading: false, sig: '', near: new Set(), err: '' };
@@ -508,13 +541,12 @@ const items3d = { layer: null, loading: false, sig: '', near: new Set(), err: ''
 // sprite/lote vêm de tools/sprite_lookup.py (graphic -> índice em sprites.bin)
 const extraItems = (new URLSearchParams(location.search).get('items') || '').split(',').filter(Boolean).map((s) => {
   const [spr, kind, x, y, z, hue = 0] = s.split(':').map(Number);
-  const buf = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-  gl.bufferData(gl.ARRAY_BUFFER, new Uint32Array([(x & 63) | ((y & 63) << 6) | ((z + 128) << 12), spr | (hue << 16)]), gl.STATIC_DRAW);
-  return { buf, kind, ox: x - (x & 63), oy: y - (y & 63) };
+  // o lote (instSet) é montado no boot, depois das malhas; lote 0 = telhado
+  return { a: (x & 63) | ((y & 63) << 6) | ((z + 128) << 12), b: spr | (hue << 16), kind, ox: x - (x & 63), oy: y - (y & 63), set: null };
 });
 
 // SPR1: u32 magic, u32 n, u32 linhas (múltiplo de 256), 16 × u16 por sprite → textura RGBA16UI 1024 × linhas/256
+// (enviada no boot, depois que loadMeshes troca o deslocamento de cada malha pelo dos vértices fundidos)
 // coluna 9 = graphic do sprite (conversor novo ou tools/sprite_ids.py); toda zerada = dados antigos
 function loadSprites(buf) {
   const n = new DataView(buf).getUint32(4, true), rows = new DataView(buf).getUint32(8, true);
@@ -522,7 +554,113 @@ function loadSprites(buf) {
   statics.sprG = Uint16Array.from({ length: n }, (_, i) => t[i * 16 + 9]);
   if (!statics.sprG.some(Boolean)) statics.sprG = null;
   statics.sprT = t;
-  return intTex(1024, rows / 256, gl.RGBA16UI, gl.RGBA_INTEGER, gl.UNSIGNED_SHORT, new Uint16Array(buf, 12, rows * 16));
+}
+// lote de instâncias numa textura RGBA32UI 1024 × linhas: (A, B) de cada instância | (0, caixa da malha) de cada
+// corrida. [0, n0) telhados (6 vértices por instância); [n0, n) malhas já ordenadas por sprite e célula de 8 × 8
+// tiles (bySprite): cada corrida de um mesmo sprite é um desenho indexado (cnt índices a partir do byte off), com as
+// instâncias das células visíveis no frame (cullSet). Segmento: trecho [ss, se) de uma corrida numa célula sc;
+// os da corrida k são [rs[k], rs[k + 1]). cb: caixa de cada célula no mundo (x, z em unidades de z, y; mín e máx).
+// (ox, oy): origem do chunk
+const CELL = 8;
+function instSet(A, B, n0, ox, oy) {
+  const n = A.length, runs = [], ss = [], se = [], sc = [], rs = [], M = statics.mBox;
+  const cb = new Float32Array(64 * 6), lo = (v) => (v << 16) >> 16, hi = (v) => v >> 16;
+  for (let c = 0; c < 64; c++) cb.set([Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity], c * 6);
+  for (let i = n0; i < n;) {
+    const s = B[i] & 0xFFFF;
+    let j = i + 1;
+    while (j < n && (B[j] & 0xFFFF) === s) j++;
+    if (statics.idxCnt[s]) {
+      runs.push(s); rs.push(ss.length);
+      // caixa como no S_VS: teto só abaixa (até 0,5 z), tie até +0,6 z, folga de 0,05
+      const x0 = lo(M[s * 3]) / 256 - 0.05, x1 = hi(M[s * 3]) / 256 + 0.05, y0 = lo(M[s * 3 + 1]) / 256 - 0.05, y1 = hi(M[s * 3 + 1]) / 256 + 0.05;
+      const z0 = Math.min(lo(M[s * 3 + 2]) / 16, 0), z1 = hi(M[s * 3 + 2]) / 16 + 0.6;
+      for (let k = i; k < j; k++) {
+        const a = A[k], cell = (((a >> 9) & 7) << 3) | ((a >> 3) & 7);
+        if (k === i || cell !== sc[sc.length - 1]) { ss.push(k); se.push(k + 1); sc.push(cell); } else se[se.length - 1] = k + 1;
+        const x = ox + (a & 63), y = oy + ((a >> 6) & 63), z = ((a >> 12) & 255) - 128, o = cell * 6;
+        cb[o] = Math.min(cb[o], x + x0); cb[o + 1] = Math.min(cb[o + 1], z + z0); cb[o + 2] = Math.min(cb[o + 2], y + y0);
+        cb[o + 3] = Math.max(cb[o + 3], x + x1); cb[o + 4] = Math.max(cb[o + 4], z + z1); cb[o + 5] = Math.max(cb[o + 5], y + y1);
+      }
+    }
+    i = j;
+  }
+  rs.push(ss.length);
+  const r = runs.length, data = new Uint32Array(Math.max(1, Math.ceil((n + r) / 1024)) * 4096);
+  for (let i = 0; i < n; i++) { data[i * 4] = A[i]; data[i * 4 + 1] = B[i]; }
+  const cnt = new Int32Array(r), off = new Int32Array(r);
+  for (let k = 0; k < r; k++) {
+    const s = runs[k], o = (n + k) * 4;
+    data[o + 1] = M[s * 3]; data[o + 2] = M[s * 3 + 1]; data[o + 3] = M[s * 3 + 2];
+    cnt[k] = statics.idxCnt[s]; off[k] = statics.idxOff[s] * 2;
+  }
+  return { tex: intTex(1024, data.length / 4096, gl.RGBA32UI, gl.RGBA_INTEGER, gl.UNSIGNED_INT, data), n, n0, cnt, off,
+    ss: Int32Array.from(ss), se: Int32Array.from(se), sc: Uint8Array.from(sc), rs: Int32Array.from(rs), cb, vis: new Uint8Array(64),
+    // desenhos do frame: d, índices, deslocamentos, instâncias, início na lista, corrida; base: (início, corrida) na lista
+    d: 0, dc: new Int32Array(r), doff: new Int32Array(r), dic: new Int32Array(r), dst: new Int32Array(r), drk: new Int32Array(r), dinst: 0, base: 0 };
+}
+// cópias de A e B com as malhas ([n0, n)) ordenadas por sprite e célula (estável); telhados ficam na frente
+function bySprite(A, B, n0) {
+  const key = (i) => (B[i] & 0xFFFF) * 64 + ((((A[i] >> 9) & 7) << 3) | ((A[i] >> 3) & 7));
+  const ord = Uint32Array.from({ length: A.length - n0 }, (_, i) => n0 + i).sort((x, y) => key(x) - key(y) || x - y);
+  const A2 = A.slice(), B2 = B.slice();
+  ord.forEach((j, i) => { A2[n0 + i] = A[j]; B2[n0 + i] = B[j]; });
+  return [A2, B2];
+}
+function boxVis(planes, x0, y0, z0, x1, y1, z1) {
+  for (const [a, b, c, d] of planes)
+    if (a * (a > 0 ? x1 : x0) + b * (b > 0 ? y1 : y0) + c * (c > 0 ? z1 : z0) + d < -0.05) return false;
+  return true;
+}
+// lista do frame (textura uList): para cada lote, os índices das instâncias de malha nas células visíveis, corrida a
+// corrida, e depois (início, corrida) de cada desenho. F: { L, len, planes, zs, fogged, cull }
+const flist = { tex: null, rows: 0 };
+function cullSet(S, F) {
+  const b = S.cb, v = S.vis, zs = F.zs, r = S.cnt.length;
+  for (let c = 0; c < 64; c++) {
+    const o = c * 6;
+    v[c] = b[o] <= b[o + 3] && (!F.cull || (!F.fogged(b[o], b[o + 2], b[o + 3], b[o + 5])
+      && boxVis(F.planes, b[o], b[o + 1] * zs, b[o + 2], b[o + 3], b[o + 4] * zs, b[o + 5]))) ? 1 : 0;
+  }
+  if (F.L.length < F.len + S.n + 2 * r) {
+    const L = new Uint32Array(Math.ceil((F.len + S.n + 2 * r) * 1.5 / 1024) * 1024);
+    L.set(F.L.subarray(0, F.len)); F.L = L;
+  }
+  const L = F.L;
+  let len = F.len, d = 0, inst = 0;
+  for (let k = 0; k < r; k++) {
+    const st = len;
+    for (let s = S.rs[k]; s < S.rs[k + 1]; s++)
+      if (v[S.sc[s]]) for (let i = S.ss[s], e = S.se[s]; i < e; i++) L[len++] = i;
+    if (len === st) continue;
+    S.dc[d] = S.cnt[k]; S.doff[d] = S.off[k]; S.dic[d] = len - st; S.dst[d] = st; S.drk[d] = k;
+    inst += len - st; d++;
+  }
+  S.base = len;
+  for (let j = 0; j < d; j++) { L[len++] = S.dst[j]; L[len++] = S.drk[j]; }
+  S.d = d; S.dinst = inst; F.len = len;
+}
+function uploadList(F) {
+  const rows = Math.max(1, Math.ceil(F.len / 1024));
+  gl.activeTexture(gl.TEXTURE10);
+  if (rows > flist.rows) {
+    if (flist.tex) gl.deleteTexture(flist.tex);
+    flist.rows = Math.max(rows, flist.rows * 2);
+    flist.tex = intTex(1024, flist.rows, gl.R32UI, gl.RED_INTEGER, gl.UNSIGNED_INT, null);
+  }
+  gl.bindTexture(gl.TEXTURE_2D, flist.tex);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 1024, rows, gl.RED_INTEGER, gl.UNSIGNED_INT, F.L, 0);
+}
+// telhados (6 vértices por instância) ou malhas (desenhos do frame, cullSet) de um lote; devolve as instâncias
+function drawSet(S, roofs) {
+  gl.activeTexture(gl.TEXTURE9); gl.bindTexture(gl.TEXTURE_2D, S.tex);
+  gl.uniform1i(SU.uN, S.n);
+  if (roofs) { if (S.n0) gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, S.n0); return S.n0; }
+  if (!S.d) return 0;
+  gl.uniform1i(SU.uDrawBase, S.base);
+  if (MD) MD.multiDrawElementsInstancedWEBGL(gl.TRIANGLES, S.dc, 0, gl.UNSIGNED_SHORT, S.doff, 0, S.dic, 0, S.d);
+  else for (let k = 0; k < S.d; k++) { gl.uniform1i(SU.uDrawId, k); gl.drawElementsInstanced(gl.TRIANGLES, S.dc[k], gl.UNSIGNED_SHORT, S.doff[k], S.dic[k]); }
+  return S.dinst;
 }
 // paredes sob o telhado que furam a face dele (empena, troncos de cabana, beiral). O shader desenha cada telha
 // meio tile para trás e ~5,5 z abaixo do z nominal (S_VS, uKind 0), então o teto cz do conversor (z da telha do
@@ -610,19 +748,49 @@ function onSurfaces(A, B, n0, count) {
 function loadMeshes(buf) {
   const rows = new DataView(buf).getUint32(8, true);
   // pegada e altura de cada malha (x0, x1, y0, y1 em tiles, topo em z): faixas de empena e decalques planos
-  const v = new Int16Array(buf, 12, rows * 8192), t = statics.sprT, n = t ? t.length / 16 : 0;
+  const v = new Int16Array(buf, 12, rows * 8192), w = new Uint32Array(buf, 12, rows * 4096), t = statics.sprT, n = t ? t.length / 16 : 0;
   statics.sprBox = new Float32Array(n * 5);
+  // o conversor grava 3 vértices por triângulo; cantos iguais (posição, pixel e normal) viram um vértice só e a
+  // malha é desenhada indexada, na mesma ordem de triângulos: o cache de vértices da GPU roda o shader ~1/4 das vezes
+  const uq = new Uint32Array(w.length), idx = new Uint16Array(w.length / 4);
+  statics.idxOff = new Uint32Array(n); statics.idxCnt = new Uint32Array(n); statics.mBox = new Uint32Array(n * 3);
+  let H = new Int32Array(8192), nu = 0, ni = 0;
   for (let i = 0; i < n; i++) {
     if ((t[i * 16 + 8] & 255) !== 0) continue;          // telhado: sem malha
     const o = t[i * 16 + 10] | (t[i * 16 + 11] << 16), c = t[i * 16 + 12];
-    let x0 = 9, x1 = -9, y0 = 9, y1 = -9, z1 = 0;
+    if (!c) continue;
+    let x0 = 32767, x1 = -32768, y0 = 32767, y1 = -32768, z0 = 32767, z1 = 0;   // cru: 1/256 tile, 1/16 z
     for (let k = o; k < o + c; k++) {
-      const x = v[k * 8] / 256, y = v[k * 8 + 1] / 256, z = v[k * 8 + 2] / 16;
-      x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); z1 = Math.max(z1, z);
+      const x = v[k * 8], y = v[k * 8 + 1], z = v[k * 8 + 2];
+      x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); z0 = Math.min(z0, z); z1 = Math.max(z1, z);
     }
-    if (c) statics.sprBox.set([x0, x1, y0, y1, z1], i * 5);
+    statics.sprBox.set([x0 / 256, x1 / 256, y0 / 256, y1 / 256, z1 / 16], i * 5);
+    statics.mBox.set([(x0 & 0xFFFF) | (x1 << 16), (y0 & 0xFFFF) | (y1 << 16), (z0 & 0xFFFF) | (z1 << 16)], i * 3);
+    let sz = 16;
+    while (sz < c * 2) sz <<= 1;
+    if (sz > H.length) H = new Int32Array(sz);
+    H.fill(0, 0, sz);
+    const base = nu;
+    statics.idxOff[i] = ni; statics.idxCnt[i] = c;
+    for (let k = o; k < o + c; k++) {
+      const a = w[k * 4], b = w[k * 4 + 1], d = w[k * 4 + 2], e = w[k * 4 + 3];
+      let h = Math.imul(a, 0x9E3779B1) ^ Math.imul(b, 0x85EBCA77) ^ Math.imul(d, 0xC2B2AE3D) ^ Math.imul(e, 0x27D4EB2F);
+      h = (h ^ (h >>> 15)) & (sz - 1);
+      for (;;) {
+        const u = H[h] - 1;
+        if (u < 0) { H[h] = nu + 1; uq[nu * 4] = a; uq[nu * 4 + 1] = b; uq[nu * 4 + 2] = d; uq[nu * 4 + 3] = e; idx[ni++] = nu++ - base; break; }
+        if (uq[u * 4] === a && uq[u * 4 + 1] === b && uq[u * 4 + 2] === d && uq[u * 4 + 3] === e) { idx[ni++] = u - base; break; }
+        h = (h + 1) & (sz - 1);
+      }
+    }
+    t[i * 16 + 10] = base & 0xFFFF; t[i * 16 + 11] = base >>> 16;
   }
-  return intTex(2048, rows, gl.RGBA16I, gl.RGBA_INTEGER, gl.SHORT, new Int16Array(buf, 12, rows * 8192));
+  gl.bindVertexArray(svao);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx.subarray(0, ni), gl.STATIC_DRAW);
+  gl.bindVertexArray(null);
+  const r2 = Math.max(1, Math.ceil(nu / 1024));
+  return intTex(2048, r2, gl.RGBA16I, gl.RGBA_INTEGER, gl.SHORT, new Int16Array(uq.buffer, 0, r2 * 8192));
 }
 // ATL1: u32 magic, u16 lado, u16 páginas, u32 reservado, u16 RGB5_A1[páginas][lado][lado]
 function loadAtlas(buf) {
@@ -657,17 +825,15 @@ async function loadStatics(c) {
   if (dv.getUint32(0, true) !== 0x32415453) throw new Error('STA2 inválido (rode o conversor de novo)');
   const count = dv.getUint32(8, true), nk = dv.getUint32(12, true);
   const n = Array.from({ length: nk }, (_, k) => dv.getUint32(16 + k * 4, true));
-  const head = 16 + nk * 4;
-  const A = new Uint32Array(buf, head, count);
+  const head = 16 + nk * 4, n0 = n[0] || 0;
+  const [A, B] = bySprite(new Uint32Array(buf, head, count), new Uint32Array(buf, head + count * 4, count), n0);
   let zMax = -128;
   for (let i = 0; i < count; i++) zMax = Math.max(zMax, ((A[i] >> 12) & 255) - 128);
-  clipGables(A, new Uint32Array(buf, head + count * 4, count), n[0] || 0, count);
-  c.sS = onSurfaces(A, new Uint32Array(buf, head + count * 4, count), n[0] || 0, count);
-  c.sBuf = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, c.sBuf);
-  gl.bufferData(gl.ARRAY_BUFFER, buf, gl.STATIC_DRAW);
-  c.sCount = count; c.sN = n; c.sHead = head; c.sZMax = zMax + 120;
-  c.sA = A; c.sB = new Uint32Array(buf, head + count * 4, count);   // cópia na CPU para os Itens 3D
+  clipGables(A, B, n0, count);
+  c.sS = onSurfaces(A, B, n0, count);
+  c.set = instSet(A, B, n0, c.cx * CH, c.cy * CH);
+  c.sCount = count; c.sN = n; c.sZMax = zMax + 120;
+  c.sA = A; c.sB = B;   // cópia na CPU para os Itens 3D
 }
 
 async function setStaticsMode(mode) {
@@ -682,24 +848,18 @@ async function setStaticsMode(mode) {
 }
 
 // a arquitetura (paredes, pisos, escadas, pontes...) dos chunks perto continua na malha do conversor;
-// o buffer kBuf guarda só essas instâncias, na mesma ordem por tipo de malha (kN[k] por tipo)
+// o lote kSet guarda só essas malhas, na mesma ordem (por sprite)
 function keepData(c, L) {
-  const kA = [], kB = [], kN = c.sN.map(() => 0);
-  for (let k = 1, i = c.sN[0]; k < c.sN.length; i += c.sN[k++])
-    for (let j = i; j < i + c.sN[k]; j++) {
-      const g = statics.sprG[c.sB[j] & 0xFFFF], top = statics.sprBox[(c.sB[j] & 0xFFFF) * 5 + 4];
-      if (!L.keepData(g, top, c.sS[j], c.sB[j] >>> 16)) continue;
-      // decalque plano no z do piso: tie máximo (+0,6 z no shader) para não ficar sob as lajotas
-      kA.push(L.lift(g, top) ? ((c.sA[j] & ~(15 << 20)) | (15 << 20)) >>> 0 : c.sA[j]); kB.push(c.sB[j]); kN[k]++;
-    }
-  const buf = new Uint32Array(kA.length * 2);
-  buf.set(kA); buf.set(kB, kA.length);
-  c.kBuf = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, c.kBuf);
-  gl.bufferData(gl.ARRAY_BUFFER, buf, gl.STATIC_DRAW);
-  c.kN = kN; c.kCount = kA.length;
+  const kA = [], kB = [];
+  for (let j = c.sN[0] || 0; j < c.sCount; j++) {
+    const g = statics.sprG[c.sB[j] & 0xFFFF], top = statics.sprBox[(c.sB[j] & 0xFFFF) * 5 + 4];
+    if (!L.keepData(g, top, c.sS[j], c.sB[j] >>> 16)) continue;
+    // decalque plano no z do piso: tie máximo (+0,6 z no shader) para não ficar sob as lajotas
+    kA.push(L.lift(g, top) ? ((c.sA[j] & ~(15 << 20)) | (15 << 20)) >>> 0 : c.sA[j]); kB.push(c.sB[j]);
+  }
+  c.kSet = instSet(Uint32Array.from(kA), Uint32Array.from(kB), 0, c.cx * CH, c.cy * CH);
 }
-function dropKept(c) { if (c.kBuf) gl.deleteBuffer(c.kBuf); c.kBuf = null; }
+function dropKept(c) { if (c.kSet) gl.deleteTexture(c.kSet.tex); c.kSet = null; }
 
 // chunks perto da câmera mudaram (ou o telhado): remonta as instâncias dos modelos
 function updateItems3d() {
@@ -713,7 +873,7 @@ function updateItems3d() {
     for (const c of items3d.near) if (!near.includes(c)) dropKept(c);
     items3d.near = new Set(near);
     L.update(near.map((c) => ({ cx: c.cx, cy: c.cy, A: c.sA, B: c.sB, S: c.sS, n0: c.sN[0] || 0, count: c.sCount })), statics.sprG, settings.roofs, statics.sprBox);
-    for (const c of near) if (!c.kBuf) keepData(c, L);
+    for (const c of near) if (!c.kSet) keepData(c, L);
   }
   L.tick(8);
 }
@@ -780,9 +940,9 @@ async function loadChunk(c) {
 function freeChunk(c) {
   if (c.hTex) gl.deleteTexture(c.hTex);
   if (c.mTex) gl.deleteTexture(c.mTex);
-  if (c.sBuf) gl.deleteBuffer(c.sBuf);
+  if (c.set) gl.deleteTexture(c.set.tex);
   dropKept(c);
-  c.hTex = c.mTex = c.sBuf = null;
+  c.hTex = c.mTex = c.set = null;
 }
 
 function unload(key, c) {
@@ -1062,6 +1222,12 @@ function frame(now) {
   }
   const planes = frustumPlanes(vp);
   const fogEnd = settings.radius * CH * 0.95;
+  // retângulo (no plano) todo a fogEnd ou mais de uCenter: os shaders o pintariam só com a cor da névoa, que é a
+  // do fundo; não desenha. Só com o olho dentro do círculo da névoa (aí o que está nele nunca fica atrás do que
+  // está fora) e fora da vista 2D; com os Itens 3D tudo fica (esconde modelos, que têm névoa própria)
+  const it3 = statics.ready && settings.statics && settings.items && items3d.layer;
+  const fogCut = !cam.classic && !it3 && Math.hypot(eye[0] - cam.x, eye[2] - cam.y) < fogEnd ? fogEnd : 1e9;
+  const fogged = (x0, y0, x1, y1) => Math.hypot(Math.max(x0 - cam.x, 0, cam.x - x1), Math.max(y0 - cam.y, 0, cam.y - y1)) >= fogCut;
 
   gl.useProgram(prog);
   gl.bindVertexArray(vao);
@@ -1087,6 +1253,7 @@ function frame(now) {
     if (c.state !== 'ready') continue;
     ready++;
     const x0 = c.cx * CH, y0 = c.cy * CH;
+    if (fogged(x0, y0, x0 + CH, y0 + CH)) continue;
     if (!boxVisible(planes, [x0, c.zMin * settings.zScale, y0], [x0 + CH, c.zMax * settings.zScale, y0 + CH])) continue;
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, c.hTex);
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, c.mTex);
@@ -1099,7 +1266,6 @@ function frame(now) {
   }
 
   let inst = 0;
-  const it3 = statics.ready && settings.statics && settings.items && items3d.layer;
   if (it3) updateItems3d();
   if (statics.ready && settings.statics) {
     gl.useProgram(sprog);
@@ -1120,39 +1286,41 @@ function frame(now) {
     gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, statics.hueTex);
     const vis = [];
     for (const c of chunks.values()) {
-      if (c.state !== 'ready' || !c.sBuf) continue;
+      if (c.state !== 'ready' || !c.set) continue;
       const x0 = c.cx * CH, y0 = c.cy * CH;
+      if (fogged(x0 - 7, y0 - 7, x0 + CH + 2, y0 + CH + 2)) continue;
       if (boxVisible(planes, [x0 - 7, Math.min(c.zMin, -128) * settings.zScale, y0 - 7], [x0 + CH + 2, c.sZMax * settings.zScale, y0 + CH + 2])) vis.push(c);
     }
-    gl.uniform1i(SU.uMesh, 8);
+    // malhas: só as células na vista entram na lista do frame (na vista 2D os vértices vão para a art: todas)
+    const F = { L: flist.L || new Uint32Array(1 << 18), len: 0, planes, zs: settings.zScale, fogged, cull: !cam.classic };
+    const sets = [];
+    for (const c of vis) {
+      const kept = it3 && items3d.near.has(c);
+      if (!kept || c.kSet) sets.push(kept ? c.kSet : c.set);
+    }
+    for (const it of extraItems) if (it.set && it.kind) sets.push(it.set);
+    for (const S of sets) cullSet(S, F);
+    flist.L = F.L;
+    uploadList(F);
+    gl.uniform1i(SU.uMesh, 8); gl.uniform1i(SU.uInst, 9); gl.uniform1i(SU.uList, 10);
+    gl.uniform1i(SU.uCull, cam.classic ? 0 : 1);
+    gl.uniform4fv(SU.uPlanes, planes.flat());
+    gl.uniform1f(SU.uFogCut, fogCut);
     gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, statics.meshTex);
-    for (let k = 0; k < kindVerts.length; k++) {
-      if (k === 0 && !settings.roofs) continue;
-      gl.uniform1i(SU.uKind, k);
+    for (const kind of [0, 1]) {   // telhados, depois malhas
+      if (kind === 0 && !settings.roofs) continue;
+      gl.uniform1i(SU.uKind, kind);
       for (const c of vis) {
-        // perto: malhas viram Itens 3D (telhados ficam); no modo misto a arquitetura fica (kBuf)
-        const kept = it3 && k > 0 && items3d.near.has(c);
-        if (kept && !c.kBuf) continue;
-        const N = kept ? c.kN : c.sN, n = N[k];
-        if (!n) continue;
-        let start = 0;
-        for (let j = 0; j < k; j++) start += N[j];
-        gl.bindBuffer(gl.ARRAY_BUFFER, kept ? c.kBuf : c.sBuf);
-        const head = kept ? 0 : c.sHead, count = kept ? c.kCount : c.sCount;
-        gl.vertexAttribIPointer(0, 1, gl.UNSIGNED_INT, 0, head + start * 4);
-        gl.vertexAttribIPointer(1, 1, gl.UNSIGNED_INT, 0, head + (count + start) * 4);
+        // perto: malhas viram Itens 3D (telhados ficam); no modo misto a arquitetura fica (kSet)
+        const kept = it3 && kind && items3d.near.has(c);
+        if (kept && !c.kSet) continue;
         gl.uniform2f(SU.uOrigin, c.cx * CH, c.cy * CH);
-        gl.drawArraysInstanced(gl.TRIANGLES, 0, kindVerts[k], n);
-        inst += n;
+        inst += drawSet(kept ? c.kSet : c.set, !kind);
       }
       for (const it of extraItems) {
-        if (it.kind !== k) continue;
-        gl.bindBuffer(gl.ARRAY_BUFFER, it.buf);
-        gl.vertexAttribIPointer(0, 1, gl.UNSIGNED_INT, 0, 0);
-        gl.vertexAttribIPointer(1, 1, gl.UNSIGNED_INT, 0, 4);
+        if (!it.set || !it.kind !== !kind) continue;
         gl.uniform2f(SU.uOrigin, it.ox, it.oy);
-        gl.drawArraysInstanced(gl.TRIANGLES, 0, kindVerts[k], 1);
-        inst++;
+        inst += drawSet(it.set, !kind);
       }
     }
   }
@@ -1190,9 +1358,10 @@ function frame(now) {
     const [sb, ab, hb, mb] = await Promise.all([
       getBuf(`${DATA}/map${MAP}/sprites.bin`), getBuf(`${DATA}/map${MAP}/atlas.bin`), getBuf(`${DATA}/hues.bin`),
       getBuf(`${DATA}/map${MAP}/meshes.bin`)]);
-    statics.sprTex = loadSprites(sb);
+    loadSprites(sb);
     statics.meshTex = loadMeshes(mb);
-    kindVerts = manifest.meshClasses;
+    statics.sprTex = intTex(1024, statics.sprT.length / 4096, gl.RGBA16UI, gl.RGBA_INTEGER, gl.UNSIGNED_SHORT, statics.sprT);
+    for (const it of extraItems) it.set = instSet(Uint32Array.of(it.a), Uint32Array.of(it.b), it.kind ? 0 : 1, it.ox, it.oy);
     const at = loadAtlas(ab);
     statics.atlas = at.t; statics.atlasSize = at.size;
     statics.hueTex = loadHues(hb);
