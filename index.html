@@ -723,14 +723,17 @@ const MAX_IN_FLIGHT = 8;
 
 // TRN1: header 16 B | u16 material[4096] | i8 height[66*66] (tiles -1..64; ou 1 byte se allFlat)
 // Arquivos antigos (sem flag 8) têm 65*65 (tiles 0..64): a borda -1 é copiada da linha/coluna 0.
+// Flag 16: alturas i16 (montanhas passam de 127) e zMin/zMax i16 nos bytes 12–15.
 const HG = 66;
 function parseTRN(buf) {
   const dv = new DataView(buf);
   if (dv.getUint32(0, true) !== 0x314E5254) throw new Error('TRN1 inválido');
-  const zMin = dv.getInt8(8), zMax = dv.getInt8(9), flags = dv.getUint16(10, true);
+  const flags = dv.getUint16(10, true), wide = (flags & 16) !== 0;
+  const zMin = wide ? dv.getInt16(12, true) : dv.getInt8(8), zMax = wide ? dv.getInt16(14, true) : dv.getInt8(9);
   const mat = new Uint16Array(buf, 16, 4096);
   let heights;
-  if (flags & 2) heights = new Int8Array(HG * HG).fill(dv.getInt8(16 + 8192));
+  if (wide) heights = flags & 2 ? new Int16Array(HG * HG).fill(dv.getInt16(16 + 8192, true)) : new Int16Array(buf, 16 + 8192, HG * HG);
+  else if (flags & 2) heights = new Int8Array(HG * HG).fill(dv.getInt8(16 + 8192));
   else if (flags & 8) heights = new Int8Array(buf, 16 + 8192, HG * HG);
   else {
     const old = new Int8Array(buf, 16 + 8192, 65 * 65);
@@ -758,7 +761,8 @@ async function loadChunk(c) {
     if (c.state === 'dead') return;
     const d = parseTRN(buf);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    c.hTex = intTex(HG, HG, gl.R8I, gl.RED_INTEGER, gl.BYTE, d.heights);
+    c.hTex = d.heights instanceof Int16Array ? intTex(HG, HG, gl.R16I, gl.RED_INTEGER, gl.SHORT, d.heights)
+      : intTex(HG, HG, gl.R8I, gl.RED_INTEGER, gl.BYTE, d.heights);
     c.mTex = intTex(64, 64, gl.R16UI, gl.RED_INTEGER, gl.UNSIGNED_SHORT, d.mat);
     c.heights = d.heights.slice();
     c.zMin = d.zMin; c.zMax = d.zMax;

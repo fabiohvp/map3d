@@ -1945,10 +1945,17 @@ def hung_sprite(img, cat):
     return x1 - x0 <= 26 and y1 - y0 >= 36
 
 
-def build_statics(src, n, W, H, out_map):
+def build_statics(src, n, W, H, out_map, mountains=0.0):
     print('lendo statics...')
     sflags, sheight, snodraw, snames = src.static_tiledata()
     gx, gy, z, sid, hue = src.read_statics(n, W, H)
+    if mountains > 0:
+        # o que está sobre a montanha sobe junto com o terreno (o que fica abaixo do chão, não)
+        tid, lz = src.read_map(n, W, H)
+        lift = mountain_lift(src, n, tid, lz, mountains)[gy, gx]
+        up = (lift > 0) & (z >= lz[gy, gx].astype(np.int16) - 2)
+        z = np.where(up, np.minimum(z.astype(np.int16) + lift, 127), z).astype(z.dtype)
+        print(f'  {int(up.sum())} statics sobem com as montanhas')
     total_raw = len(sid)
     keep = (sid < len(sflags)) & ~np.isin(sid, list(NODRAW_STATIC))
     keep[keep] &= ~snodraw[sid[keep]]
@@ -2159,6 +2166,16 @@ class ClassicSource:
 
     def static_tiledata(self):
         return read_tiledata_static(self.client)
+
+    def land_names(self):
+        td = open(os.path.join(self.client, 'tiledata.mul'), 'rb').read()
+        names, off = [], 0
+        for i in range(0x4000):
+            if i % 32 == 0:
+                off += 4
+            names.append(td[off + 10:off + 30].split(b'\0')[0].decode('latin1'))
+            off += 30
+        return names
 
     def static_art(self, s):
         return decode_static_art(self.art.get(f'build/artlegacymul/{s + 0x4000:08d}.tga'))
@@ -2554,10 +2571,46 @@ def smooth_heights(z, keep, k):
     return np.rint(zf).clip(-128, 127).astype(z.dtype)
 
 
-def build_terrain(src, n, W, H, out_map, smooth=0.0):
+def _box(a, r, op):
+    """Filtro separável de janela (2r + 1)² com borda repetida: op = np.minimum ou np.add."""
+    for ax in (0, 1):
+        p = np.pad(a, [(r, r) if i == ax else (0, 0) for i in (0, 1)], mode='edge')
+        n = a.shape[ax]
+        acc = np.take(p, range(0, n), axis=ax)
+        for k in range(1, 2 * r + 1):
+            acc = op(acc, np.take(p, range(k, k + n), axis=ax))
+        a = acc
+    return a
+
+
+DUNGEON_X = 5120     # mapas 0 e 1: a leste daqui ficam as masmorras (paredes de caverna em rocha)
+
+
+def mountain_lift(src, n, tid, z, gain):
+    """Montanhas mais altas: cada tile de rocha sobe gain × a altura acima do pé local (mínimo das
+    alturas num raio de 12 tiles, suavizado); a borda da rocha entra aos poucos (fração de rocha na
+    janela 5x5), sem degrau no pé. Fora das montanhas (e nas masmorras) não muda. -> int16 [H, W]."""
+    if gain <= 0 or not hasattr(src, 'land_names'):
+        return np.zeros(z.shape, np.int16)
+    rockid = np.array([nm in ('rock', 'mountain') for nm in src.land_names()])
+    rock = rockid[np.minimum(tid, len(rockid) - 1)].astype(np.float32)
+    zf = np.where(np.isin(tid, list(VOID_LAND)), 127, z).astype(np.float32)   # void não é pé de montanha
+    foot = _box(zf, 12, np.minimum)
+    foot = _box(foot, 4, np.add) / 81.0
+    w = _box(rock, 2, np.add) / 25.0
+    lift = np.rint(gain * w * np.maximum(0.0, z - foot)).astype(np.int16)
+    if n in (0, 1):
+        lift[:, DUNGEON_X:] = 0
+    return lift
+
+
+def build_terrain(src, n, W, H, out_map, smooth=0.0, mountains=0.0):
     print('lendo mapa...')
     tid, z = src.read_map(n, W, H)
-    z = smooth_heights(z, np.isin(tid, list(VOID_LAND)), smooth)
+    z0 = z
+    lift = mountain_lift(src, n, tid, z, mountains)
+    z = smooth_heights(z, np.isin(tid, list(VOID_LAND)), smooth).astype(np.int16) + lift
+    print(f'  montanhas +{mountains:.0%}: {int((lift > 0).sum())} tiles, até +{int(lift.max())} z')
     os.makedirs(os.path.join(out_map, 'terrain'), exist_ok=True)
     land_to_mat, mats, l64, l128 = src.terrain_materials(tid)
     print(f'  materiais {len(mats)}, land64 {len(l64)} camadas, land128 {len(l128)} camadas')
@@ -2582,7 +2635,7 @@ def build_terrain(src, n, W, H, out_map, smooth=0.0):
     sx, sy, sz, ssid, _ = src.read_statics(n, W, H)
     ok = ssid < len(sflags)
     sx, sy, sz = sx[ok], sy[ok], sz[ok]
-    low = np.isin(tid[sy, sx], list(VOID_LAND)) & (sz < z[sy, sx])
+    low = np.isin(tid[sy, sx], list(VOID_LAND)) & (sz < z0[sy, sx])
     mat[sy[low], sx[low]] = HOLE
     zp = np.pad(z, ((1, ch * CHUNK - H + 1), (1, cw * CHUNK - W + 1)), mode='edge')
     exists = np.zeros(cw * ch, np.uint8)
@@ -2596,15 +2649,17 @@ def build_terrain(src, n, W, H, out_map, smooth=0.0):
                 continue
             hgt = zp[cy * CHUNK:cy * CHUNK + CHUNK + 2, cx * CHUNK:cx * CHUNK + CHUNK + 2]
             zmin, zmax = int(hgt.min()), int(hgt.max())
-            flags = (2 if zmin == zmax else 0) | (4 if void.any() else 0) | 8  # bit3: grade 66x66
-            hdr = struct.pack('<4sHHbbHI', b'TRN1', cx, cy, zmin, zmax, flags, 0)
-            hbytes = struct.pack('<b3x', zmin) if zmin == zmax else hgt.astype(np.int8).tobytes()
+            # bit3: grade 66x66; bit4: alturas int16 (montanhas passam de 127), zmin/zmax int16 no fim do cabeçalho
+            flags = (2 if zmin == zmax else 0) | (4 if void.any() else 0) | 8 | 16
+            hdr = struct.pack('<4sHHbbHhh', b'TRN1', cx, cy, max(-128, min(127, zmin)), max(-128, min(127, zmax)),
+                              flags, zmin, zmax)
+            hbytes = struct.pack('<h2x', zmin) if zmin == zmax else hgt.astype('<i2').tobytes()
             data = hdr + m.astype('<u2').tobytes() + hbytes
             with open(os.path.join(out_map, 'terrain', f'{cx}_{cy}.bin'), 'wb') as f:
                 f.write(data)
             i = cy * cw + cx
             exists[i] = 1
-            zmeta[2 * i], zmeta[2 * i + 1] = zmin, zmax
+            zmeta[2 * i], zmeta[2 * i + 1] = max(-128, min(127, zmin)), max(-128, min(127, zmax))
             written += 1
             total += len(data)
     print(f'  {written} chunks, {total / 1e6:.1f} MB')
@@ -2649,6 +2704,8 @@ def main():
     ap.add_argument('--only', choices=('all', 'terrain', 'statics'), default='all')
     ap.add_argument('--smooth', type=float, default=0.5,
                     help='fração (acima de 1 = passadas extras) que cada tile de terreno anda até a média dos vizinhos 3x3')
+    ap.add_argument('--mountains', type=float, default=1.0,
+                    help='quanto as montanhas (tiles de rocha) sobem além da altura acima do pé local (1 = +100%%)')
     a = ap.parse_args()
     W, H = MAPS[a.map]
     out_map = os.path.join(a.out, f'map{a.map}')
@@ -2662,12 +2719,12 @@ def main():
     mpath = os.path.join(out_map, 'manifest.json')
     manifest = json.load(open(mpath)) if os.path.exists(mpath) else {}
     if a.only in ('all', 'terrain'):
-        manifest.update(build_terrain(src, a.map, W, H, out_map, a.smooth))
+        manifest.update(build_terrain(src, a.map, W, H, out_map, a.smooth, a.mountains))
     elif 'chunks' not in manifest:
         sys.exit('rode o terreno primeiro (--only terrain ou all)')
     if a.only in ('all', 'statics'):
         manifest['hues'] = build_hues(src, a.out)
-        manifest.update(build_statics(src, a.map, W, H, out_map))
+        manifest.update(build_statics(src, a.map, W, H, out_map, a.mountains))
     manifest['build'] = int(time.time())  # o viewer usa como ?v= nos .bin (cache)
     with open(mpath, 'w') as f:
         json.dump(manifest, f)
