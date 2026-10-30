@@ -904,6 +904,74 @@ def cylinder_mesh(mask, segs=16):
     return _expand(P, px, tris, N)
 
 
+def statue_mesh(mask, segs=12, ring_px=8):
+    """Estátua em pedestal: sólido de revolução no eixo do pé da silhueta, raio de cada anel pelo trecho
+    contínuo da linha que passa no eixo (lança, braço e estandarte finos ficam de fora) e o que sobra
+    num plano voltado para a câmera pelo eixo. Da vista do UO é a art; de lado tem volume (o casco
+    inflado virava lâmina). Textura: projeção da art no pixel de cada ponto (exata na frente; a metade
+    de trás espelha a da frente no eixo)."""
+    h, w = mask.shape
+    x0, y0, x1, y1 = _bbox(mask)
+    foot = np.nonzero(mask[max(y0, y1 - (y1 - y0) // 4):y1].any(0))[0]
+    axis = (foot[0] + foot[-1] + 1) / 2.0
+    a = int(axis)
+
+    def core(v):
+        row = mask[v]
+        if not row[a]:
+            return 0.0
+        l = a
+        while l > 0 and row[l - 1]:
+            l -= 1
+        r = a
+        while r + 1 < w and row[r + 1]:
+            r += 1
+        return max(axis - l, r + 1 - axis)
+
+    d = (axis - w / 2) / HT
+    s0 = 1.0                                         # eixo no centro do tile: lx + ly = 1
+    cx, cy = (s0 + d) / 2, (s0 - d) / 2
+    # anel k: linha da art v; ponto da frente (lx + ly = s0 + r·√2) cai na linha v
+    vs = list(range(y1 - 1, y0 - 1, -ring_px)) + [y0]
+    rs = np.array([max(core(v), 1.0) / PXP for v in vs])
+    zs = np.array([(HT * (s0 + r * SQ2) + h - 44 - (v + 1)) / PZ for v, r in zip(vs, rs)])
+    zs = np.maximum.accumulate(np.maximum(zs, 0.0))
+    th = np.linspace(0, 2 * math.pi, segs, endpoint=False) + math.pi / 4   # θ = π/4: frente (+x +y)
+    ring = np.stack([np.cos(th), np.sin(th)], 1)
+    K = len(vs)
+    side = np.concatenate([np.column_stack([cx + r * ring[:, 0], cy + r * ring[:, 1], np.full(segs, z)])
+                           for r, z in zip(rs, zs)])
+    cap = np.concatenate([side[-segs:], [[cx, cy, zs[-1]]]])
+    P = np.concatenate([side, cap])
+    N = np.concatenate([np.tile(np.column_stack([ring, np.zeros(segs)]), (K, 1)),
+                        np.tile([0.0, 0.0, 1.0], (segs + 1, 1))])
+    tris = []
+    for k in range(K - 1):
+        for i in range(segs):
+            p, q = k * segs + i, k * segs + (i + 1) % segs
+            tris += [(p, q, q + segs), (p, q + segs, p + segs)]
+    c0, mid = len(side), len(P) - 1
+    tris += [(c0 + i, c0 + (i + 1) % segs, mid) for i in range(segs)]
+    # metade de trás: o pixel do ponto espelhado no plano do eixo voltado para a câmera
+    S = P.copy()
+    back = (S[:, 0] + S[:, 1]) < s0
+    off = s0 - (S[back, 0] + S[back, 1])
+    S[back, 0] += off
+    S[back, 1] += off
+    px = _proj(S, w, h)
+    solid = _expand(P, px, np.array(tris, np.int64), N)
+    # sobra: pixels fora do raio do anel daquela linha -> plano voltado para a câmera no eixo
+    rest = mask.copy()
+    for v in range(y0, y1):
+        k = int(np.argmin([abs(v - u) for u in vs]))
+        r = rs[k] * PXP
+        rest[v, max(0, int(math.floor(axis - r))):int(math.ceil(axis + r))] = False
+    if rest.sum() < 12:
+        return solid
+    card = _plane_mesh(rest, _facing_plane(rest, s0))
+    return tuple(np.concatenate([solid[k], card[k]]) for k in range(3))
+
+
 def bed_mesh(img, H):
     """Peça de cama: colchão = caixa do tile na altura do tiledata. Do resto da silhueta, o lençol que
     transborda o tile (cinza/branco, sem saturação) é uma aba horizontal na altura do colchão; a madeira
@@ -1402,6 +1470,8 @@ def sprite_mesh(img, tx, cat, sub, name='', height=0, surface=False):
         mesh = cylinder_mesh(mask)
         if mesh is not None:
             return 'cilindro', mesh
+    if re.fullmatch(r'\s*(warrior )?statue\s*', name, re.I) and mask.shape[0] >= 80:
+        return 'estatua', statue_mesh(mask)        # estátua alta: revolução + plano (o casco virava lâmina)
     if cat == 'furniture' and sub == 'bed':
         return 'cama', bed_mesh(img, height if height > 0 else 5)
     if re.search(r'\bfountain\b', name, re.I) and mask.shape[1] <= 46 and mask.shape[0] <= 60:
@@ -1458,6 +1528,11 @@ def sprite_mesh(img, tx, cat, sub, name='', height=0, surface=False):
             for iou, boxes in sorted(cands, key=lambda c: -c[0]):
                 if iou >= 0.6 and hexagon_iou(mask, boxes, of_mask=True) >= 0.85:
                     return ('box' if len(boxes) == 1 else 'comoda'), box_mesh(mask, boxes)
+        if kind == 'architecture/arch':
+            # meia-volta do arco solta no alto (sem pilar): plano na linha da parede, não casco
+            mesh = rail_mesh(mask, snap=True)
+            if mesh is not None:
+                return 'grade', mesh
         if kind in ('architecture/floor', 'architecture/bridge'):   # superfície pisável: casco vira almofada
             return 'flat', flat_mesh(mask)
         arch = 'hull'
